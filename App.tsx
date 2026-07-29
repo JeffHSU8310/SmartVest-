@@ -2312,9 +2312,9 @@ function App() {
     <div className="min-h-screen pb-20">
       <div className="sticky top-0 z-50">
         <div className="absolute inset-0 bg-[#f3f4f6]/85 backdrop-blur-md shadow-sm -z-10" />
-        <header className="px-4 py-3">
-          <div className="w-full xl:px-6 mx-auto glass-panel rounded-2xl px-4 py-2 shadow-lg flex flex-col md:flex-row items-center justify-between gap-2">
-            <div className="flex items-center gap-3 w-full md:w-auto">
+        <header className="px-2 sm:px-4 py-1.5 sm:py-3">
+          <div className="w-full xl:px-6 mx-auto glass-panel rounded-2xl px-3 sm:px-4 py-1.5 sm:py-2 shadow-md flex flex-wrap md:flex-row items-center justify-between gap-2">
+            <div className="flex items-center gap-2 sm:gap-3 w-full md:w-auto justify-between md:justify-start">
               <div className="bg-gradient-to-br from-blue-600 to-indigo-600 text-white p-2 rounded-xl">
                 <Sparkles size={18} fill="currentColor" />
               </div>
@@ -2402,9 +2402,9 @@ function App() {
           </div>
         </header>
 
-        <div className="px-4 pb-2">
-          <div className="w-full xl:px-6 mx-auto flex flex-col xl:flex-row items-start xl:items-center justify-between gap-3">
-            <nav className="flex flex-wrap items-center gap-2">
+        <div className="px-2 sm:px-4 pb-2">
+          <div className="w-full xl:px-6 mx-auto flex items-center justify-between gap-3">
+            <nav className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto no-scrollbar py-1 w-full flex-nowrap scroll-smooth">
               {navOrder.map((id) => {
                 const tab = NAV_ITEMS.find((t) => t.id === id);
                 if (!tab) return null;
@@ -2422,15 +2422,15 @@ function App() {
                       setActiveTab(tab.id as any);
                       if (tab.id === "market") setMarketSymbol(null);
                     }}
-                    className={`flex items-center gap-2 px-5 py-2 rounded-full text-sm font-bold transition-all cursor-pointer select-none active:scale-95 ${activeTab === tab.id ? "bg-slate-800 text-white shadow-lg" : "bg-white/60 text-slate-600 hover:bg-white"} ${isDragging ? "opacity-50 ring-2 ring-blue-300" : ""}`}
+                    className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-5 py-1.5 sm:py-2 rounded-full text-xs sm:text-sm font-bold transition-all cursor-pointer select-none shrink-0 active:scale-95 ${activeTab === tab.id ? "bg-slate-800 text-white shadow-md" : "bg-white/80 text-slate-600 hover:bg-white border border-slate-200/50"} ${isDragging ? "opacity-50 ring-2 ring-blue-300" : ""}`}
                   >
-                    <Icon size={17} />
-                    {tab.label}
+                    <Icon size={15} className="shrink-0" />
+                    <span className="whitespace-nowrap">{tab.label}</span>
                   </button>
                 );
               })}
             </nav>
-            <div className="flex items-center gap-3"></div>
+            <div className="hidden sm:flex items-center gap-3"></div>
           </div>
         </div>
       </div>
