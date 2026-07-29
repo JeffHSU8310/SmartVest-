@@ -190,6 +190,25 @@ export const syncToGitHubGist = async (rawToken: string, rawGistId?: string): Pr
           currentMethod = 'PATCH';
         }
       }
+      
+      // 清理多餘的舊 chunk
+      if (currentMethod === 'PATCH') {
+        const cleanupPayload: any = {};
+        let hasCleanup = false;
+        Object.keys(existingFiles).forEach(k => {
+          if (k.startsWith('smartvest_backup_') && k.endsWith('.json')) {
+            const idxStr = k.replace('smartvest_backup_', '').replace('.json', '');
+            const idx = parseInt(idxStr, 10);
+            if (!isNaN(idx) && idx >= numChunks) {
+              cleanupPayload[k] = null;
+              hasCleanup = true;
+            }
+          }
+        });
+        if (hasCleanup) {
+          await sendGistReq(currentUrl, currentMethod, cleanupPayload);
+        }
+      }
     }
 
     const currentConfig = getGitHubSyncConfig();
