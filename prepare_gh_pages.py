@@ -43,7 +43,21 @@ def deploy_dist_to_root():
             content = f.read()
 
         ts = int(time.time())
-        meta_tags = '<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />\n    <meta http-equiv="Pragma" content="no-cache" />\n    <meta http-equiv="Expires" content="0" />'
+        meta_tags = """<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <script>
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then(function(regs) {
+          for(let r of regs) r.unregister();
+        });
+      }
+      if ('caches' in window) {
+        caches.keys().then(function(names) {
+          for (let n of names) caches.delete(n);
+        });
+      }
+    </script>"""
         if '<head>' in content:
             content = content.replace('<head>', f'<head>\n    {meta_tags}')
         
@@ -51,7 +65,7 @@ def deploy_dist_to_root():
 
         with open(target_html, 'w', encoding='utf-8') as f:
             f.write(content)
-        print(f"[OK] 已成功寫入抗快取標籤與版本號 (v={ts}) 至 index.html！")
+        print(f"[OK] 已成功寫入 SW/Cache 清除指令與版本號 (v={ts}) 至 index.html！")
 
 if __name__ == '__main__':
     deploy_dist_to_root()

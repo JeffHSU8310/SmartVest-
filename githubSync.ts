@@ -213,7 +213,7 @@ export const restoreFromGitHubGist = async (rawToken: string, rawGistId: string)
 
     for (const url of urlsToTry) {
       try {
-        const rawRes = await fetch(url);
+        const rawRes = await fetch(url, { cache: 'no-cache' });
         if (rawRes.ok) {
           const text = await rawRes.text();
           if (text && text.trim().endsWith('}')) {
