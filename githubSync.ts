@@ -130,6 +130,16 @@ export const syncToGitHubGist = async (rawToken: string, rawGistId?: string): Pr
   };
 
   try {
+    const cleanBodyForPost = (originalBody: any) => {
+      const newFiles: any = {};
+      for (const k of Object.keys(originalBody.files)) {
+        if (originalBody.files[k] !== null) {
+          newFiles[k] = originalBody.files[k];
+        }
+      }
+      return { ...originalBody, files: newFiles };
+    };
+
     let url = 'https://api.github.com/gists';
     let method = 'POST';
 
@@ -138,6 +148,8 @@ export const syncToGitHubGist = async (rawToken: string, rawGistId?: string): Pr
       method = 'PATCH';
     }
 
+    let requestBody = method === 'POST' ? cleanBodyForPost(body) : body;
+
     let response = await fetch(url, {
       method,
       headers: {
@@ -145,13 +157,14 @@ export const syncToGitHubGist = async (rawToken: string, rawGistId?: string): Pr
         'Accept': 'application/vnd.github+json',
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify(requestBody)
     });
 
     // 若指定了 Gist ID 執行覆蓋 (PATCH) 但 GitHub 回傳 404，自動改為新建 (POST)
     if (!response.ok && response.status === 404 && existingGistId) {
       url = 'https://api.github.com/gists';
       method = 'POST';
+      requestBody = cleanBodyForPost(body);
       response = await fetch(url, {
         method,
         headers: {
@@ -159,7 +172,7 @@ export const syncToGitHubGist = async (rawToken: string, rawGistId?: string): Pr
           'Accept': 'application/vnd.github+json',
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(body)
+        body: JSON.stringify(requestBody)
       });
     }
 
