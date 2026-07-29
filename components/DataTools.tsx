@@ -123,22 +123,27 @@ const DataTools: React.FC<Props> = ({
   };
 
   const handleRestoreFromGitHub = async () => {
-    if (!ghTokenInput || !ghGistIdInput) {
-      alert('請先填寫 Token 與 Gist ID');
+    const token = (ghTokenInput || '').trim();
+    const gistId = (ghGistIdInput || '').trim();
+
+    if (!token || !gistId) {
+      alert('請先填寫正確的 GitHub Token 與 Gist ID');
       return;
     }
-    if (!confirm('從 GitHub 還原將覆蓋現有本地數據，確定繼續？')) return;
+
     setIsGhSyncing(true);
-    setGhStatusMsg('⏳ 正在從 GitHub 下載備份...');
-    const res = await restoreFromGitHubGist(ghTokenInput, ghGistIdInput);
+    setGhStatusMsg('⏳ 正在從 GitHub 下載最新雲端備份...');
+    const res = await restoreFromGitHubGist(token, gistId);
     setIsGhSyncing(false);
     if (res.success) {
       const updated = getGitHubSyncConfig();
       setGhConfig(updated);
-      setGhStatusMsg('✅ 雲端備份已成功還原！請重新整理頁面載入最新資料。');
-      setTimeout(() => window.location.reload(), 1500);
+      setGhStatusMsg('🎉 雲端備份已成功還原！畫面即將重新整理載入最新帳目...');
+      setTimeout(() => {
+        window.location.reload();
+      }, 1200);
     } else {
-      setGhStatusMsg(`❌ 還原失敗：${res.error}`);
+      setGhStatusMsg(`❌ 還原失敗：${res.error} (請檢查 Token 與 Gist ID 是否複製正確)`);
     }
   };
 
@@ -751,6 +756,9 @@ const DataTools: React.FC<Props> = ({
               type="password"
               value={ghTokenInput}
               onChange={e => setGhTokenInput(e.target.value)}
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
               placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
               className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:border-indigo-500 font-mono shadow-2xs"
             />
@@ -764,6 +772,9 @@ const DataTools: React.FC<Props> = ({
               type="text"
               value={ghGistIdInput}
               onChange={e => setGhGistIdInput(e.target.value)}
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
               placeholder="如已有 Gist ID 請填入，否則自動生成"
               className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:border-indigo-500 font-mono shadow-2xs"
             />

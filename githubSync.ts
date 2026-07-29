@@ -67,7 +67,10 @@ export const importAllAppData = (backupPayload: Record<string, any>): boolean =>
 };
 
 // 建立或更新 GitHub Gist
-export const syncToGitHubGist = async (token: string, existingGistId?: string): Promise<{ success: boolean; gistId?: string; error?: string }> => {
+export const syncToGitHubGist = async (rawToken: string, rawGistId?: string): Promise<{ success: boolean; gistId?: string; error?: string }> => {
+  const token = (rawToken || '').trim();
+  const existingGistId = (rawGistId || '').trim();
+
   if (!token) return { success: false, error: '未提供 GitHub Token' };
 
   const payload = exportAllAppData();
@@ -126,8 +129,11 @@ export const syncToGitHubGist = async (token: string, existingGistId?: string): 
 };
 
 // 從 GitHub Gist 下載並還原資料
-export const restoreFromGitHubGist = async (token: string, gistId: string): Promise<{ success: boolean; error?: string }> => {
-  if (!token || !gistId) return { success: false, error: '未提供 GitHub Token 或 Gist ID' };
+export const restoreFromGitHubGist = async (rawToken: string, rawGistId: string): Promise<{ success: boolean; error?: string }> => {
+  const token = (rawToken || '').trim();
+  const gistId = (rawGistId || '').trim();
+
+  if (!token || !gistId) return { success: false, error: '未提供完整 GitHub Token 或 Gist ID' };
 
   try {
     const response = await fetch(`https://api.github.com/gists/${gistId}`, {
@@ -138,7 +144,8 @@ export const restoreFromGitHubGist = async (token: string, gistId: string): Prom
     });
 
     if (!response.ok) {
-      return { success: false, error: `無法取得 Gist 資料 (HTTP ${response.status})` };
+      const errJson = await response.json().catch(() => ({}));
+      return { success: false, error: errJson.message || `無法取得 Gist 資料 (HTTP ${response.status})` };
     }
 
     const resData = await response.json();
