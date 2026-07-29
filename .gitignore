@@ -9,9 +9,6 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Exclude workflow file to prevent PAT 'workflow scope' permission error on push
-.github/
-
 # Temporary test and debug scripts
 debug_*
 test_*
@@ -31,6 +28,8 @@ test5.js
 tmp_inputs.txt
 check_size.py
 list_source_files.py
+check_gh_pages.py
+test_github_connection.py
 *.html.tmp
 moneydj_*.html
 yahoo_*.html
