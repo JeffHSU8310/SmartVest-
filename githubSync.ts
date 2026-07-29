@@ -185,25 +185,39 @@ export const restoreFromGitHubGist = async (rawToken: string, rawGistId: string)
       return { success: false, error: 'Gist 中找不到 SmartVest 備份檔案' };
     }
 
-    let rawJsonContent = file.content;
+    let rawJsonContent = '';
+    let rawFetchSuccess = false;
 
-    // 關鍵修復：若 Gist 內容被 GitHub API 截斷 (truncated) 或需要下載全量資料
-    // 注意：存取 raw_url (gist.githubusercontent.com) 時切勿攜帶 Authorization Header，否則會被瀏覽器 CORS 預檢阻擋！
-    if (file.truncated || file.raw_url) {
+    // 若檔案較大 (GitHub API 會截斷為 10KB 且 truncated=true)，優先從乾淨的 raw_url 下載完整 4.7MB 資料
+    const urlsToTry: string[] = [];
+    if (file.raw_url) urlsToTry.push(file.raw_url);
+    if (resData.owner?.login) {
+      urlsToTry.push(`https://gist.githubusercontent.com/${resData.owner.login}/${gistId}/raw/${GIST_FILENAME}`);
+    }
+    urlsToTry.push(`https://gist.githubusercontent.com/raw/${gistId}/${GIST_FILENAME}`);
+
+    for (const url of urlsToTry) {
       try {
-        const cacheBusterUrl = file.raw_url.includes('?') 
-          ? `${file.raw_url}&_t=${Date.now()}` 
-          : `${file.raw_url}?_t=${Date.now()}`;
-
-        const rawRes = await fetch(cacheBusterUrl);
+        const rawRes = await fetch(url);
         if (rawRes.ok) {
-          const fetchedText = await rawRes.text();
-          if (fetchedText && fetchedText.trim().endsWith('}')) {
-            rawJsonContent = fetchedText;
+          const text = await rawRes.text();
+          if (text && text.trim().endsWith('}')) {
+            rawJsonContent = text;
+            rawFetchSuccess = true;
+            break;
           }
         }
-      } catch (rawErr) {
-        console.warn('Failed to fetch from raw_url, fallbacking...', rawErr);
+      } catch (err) {
+        console.warn(`Fetch from ${url} failed`, err);
+      }
+    }
+
+    // 若從 raw_url 抓取失敗，且原 API content 完整未截斷，才退回使用 API content
+    if (!rawFetchSuccess) {
+      if (!file.truncated && file.content && file.content.trim().endsWith('}')) {
+        rawJsonContent = file.content;
+      } else {
+        return { success: false, error: '備份資料較大 (約 4.7MB)，在 iPhone 網路連線讀取全量資料逾時。請確認網路順暢後重試。' };
       }
     }
 
@@ -215,18 +229,7 @@ export const restoreFromGitHubGist = async (rawToken: string, rawGistId: string)
     try {
       backupPayload = JSON.parse(rawJsonContent);
     } catch (parseErr: any) {
-      let repairedText = rawJsonContent.trim();
-      if (!repairedText.endsWith('}')) {
-        const lastBrace = repairedText.lastIndexOf('}');
-        if (lastBrace > 0) {
-          repairedText = repairedText.substring(0, lastBrace + 1);
-        }
-      }
-      try {
-        backupPayload = JSON.parse(repairedText);
-      } catch (e2) {
-        return { success: false, error: `雲端資料格式不完整 (${parseErr.message})，請點擊「備份上傳 GitHub」建立最新備份檔。` };
-      }
+      return { success: false, error: `雲端資料格式不完整 (${parseErr.message})，請於電腦端再次按下「備份上傳至 GitHub」更新存檔。` };
     }
 
     const ok = importAllAppData(backupPayload);
