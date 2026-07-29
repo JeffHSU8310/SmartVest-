@@ -102,14 +102,31 @@ export const syncToGitHubGist = async (rawToken: string, rawGistId?: string): Pr
   const payload = exportAllAppData();
   const content = JSON.stringify(payload);
 
+  const CHUNK_SIZE = 800000; // 800KB 分割
+  const filesPayload: any = {};
+
+  if (content.length > CHUNK_SIZE) {
+    const numChunks = Math.ceil(content.length / CHUNK_SIZE);
+    for (let i = 0; i < numChunks; i++) {
+      const chunkStr = content.substring(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+      const chunkName = `smartvest_backup_${i.toString().padStart(2, '0')}.json`;
+      filesPayload[chunkName] = { content: chunkStr };
+    }
+    // 刪除可能存在的舊版單一巨大檔案
+    filesPayload[GIST_FILENAME] = null;
+  } else {
+    // 檔案較小則直接使用單一檔案
+    filesPayload[GIST_FILENAME] = { content: content };
+    // 嘗試清理可能殘留的 chunk
+    for (let i = 0; i < 10; i++) {
+       filesPayload[`smartvest_backup_${i.toString().padStart(2, '0')}.json`] = null;
+    }
+  }
+
   const body: any = {
     description: 'SmartVest 存股記帳雲端備份',
     public: false,
-    files: {
-      [GIST_FILENAME]: {
-        content: content
-      }
-    }
+    files: filesPayload
   };
 
   try {
@@ -195,44 +212,60 @@ export const restoreFromGitHubGist = async (rawToken: string, rawGistId: string)
     }
 
     const resData = await response.json();
-    const file = resData.files?.[GIST_FILENAME] || (resData.files ? Object.values(resData.files)[0] : null) as any;
-    if (!file) {
-      return { success: false, error: 'Gist 中找不到 SmartVest 備份檔案' };
-    }
-
+    // 尋找分割的 chunk 檔案 (smartvest_backup_00.json, etc.)
+    const chunkKeys = Object.keys(resData.files || {}).filter(k => k.startsWith('smartvest_backup_') && k.endsWith('.json')).sort();
+    
     let rawJsonContent = '';
     let rawFetchSuccess = false;
 
-    // 若檔案較大 (GitHub API 會截斷為 10KB 且 truncated=true)，優先從乾淨的 raw_url 下載完整 4.7MB 資料
-    const urlsToTry: string[] = [];
-    if (file.raw_url) urlsToTry.push(file.raw_url);
-    if (resData.owner?.login) {
-      urlsToTry.push(`https://gist.githubusercontent.com/${resData.owner.login}/${gistId}/raw/${GIST_FILENAME}`);
-    }
-    urlsToTry.push(`https://gist.githubusercontent.com/raw/${gistId}/${GIST_FILENAME}`);
-
-    for (const url of urlsToTry) {
-      try {
-        const rawRes = await fetch(url, { cache: 'no-cache' });
-        if (rawRes.ok) {
-          const text = await rawRes.text();
-          if (text && text.trim().endsWith('}')) {
-            rawJsonContent = text;
-            rawFetchSuccess = true;
-            break;
-          }
+    if (chunkKeys.length > 0) {
+      // 組合所有 chunks
+      for (const k of chunkKeys) {
+        const chunkFile = resData.files[k];
+        if (chunkFile.truncated) {
+          // 極端情況防呆：理論上 800KB 不會被 truncated
+          return { success: false, error: '部分分割檔案意外遭到 GitHub 截斷，請重新備份上傳。' };
         }
-      } catch (err) {
-        console.warn(`Fetch from ${url} failed`, err);
+        rawJsonContent += (chunkFile.content || '');
       }
-    }
+      rawFetchSuccess = true;
+    } else {
+      // 退回單一檔案模式 (Legacy)
+      const file = resData.files?.[GIST_FILENAME] || (resData.files ? Object.values(resData.files)[0] : null) as any;
+      if (!file) {
+        return { success: false, error: 'Gist 中找不到 SmartVest 備份檔案' };
+      }
+      
+      const urlsToTry: string[] = [];
+      if (file.raw_url) urlsToTry.push(file.raw_url);
+      if (resData.owner?.login) {
+        urlsToTry.push(`https://gist.githubusercontent.com/${resData.owner.login}/${gistId}/raw/${GIST_FILENAME}`);
+      }
+      urlsToTry.push(`https://gist.githubusercontent.com/raw/${gistId}/${GIST_FILENAME}`);
 
-    // 若從 raw_url 抓取失敗，且原 API content 完整未截斷，才退回使用 API content
-    if (!rawFetchSuccess) {
-      if (!file.truncated && file.content && file.content.trim().endsWith('}')) {
-        rawJsonContent = file.content;
-      } else {
-        return { success: false, error: '備份資料較大 (約 4.7MB)，在 iPhone 網路連線讀取全量資料逾時。請確認網路順暢後重試。' };
+      for (const url of urlsToTry) {
+        try {
+          const rawRes = await fetch(url, { cache: 'no-cache' });
+          if (rawRes.ok) {
+            const text = await rawRes.text();
+            if (text && text.trim().endsWith('}')) {
+              rawJsonContent = text;
+              rawFetchSuccess = true;
+              break;
+            }
+          }
+        } catch (err) {
+          console.warn(`Fetch from ${url} failed`, err);
+        }
+      }
+
+      if (!rawFetchSuccess) {
+        if (!file.truncated && file.content && file.content.trim().endsWith('}')) {
+          rawJsonContent = file.content;
+          rawFetchSuccess = true;
+        } else {
+          return { success: false, error: '舊版備份資料過大被 GitHub 截斷。請在「電腦端」先點擊「備份上傳」轉換為新版分割格式後，再於手機下載！' };
+        }
       }
     }
 

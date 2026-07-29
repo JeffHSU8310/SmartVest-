@@ -19,6 +19,21 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
+    <script>
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then(function(regs) {
+          for(let r of regs) r.unregister();
+        });
+      }
+      if ('caches' in window) {
+        caches.keys().then(function(names) {
+          for (let n of names) caches.delete(n);
+        });
+      }
+    </script>
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
@@ -51,6 +66,9 @@
 
 
 
+
+
+
   <script type="importmap">
 {
   "imports": {
@@ -62,8 +80,8 @@
   }
 }
 </script>
-  <script type="module" crossorigin src="./assets/index-BGl3Bx0E.js?v=1785336459"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-CzP7ySOV.css?v=1785336459">
+  <script type="module" crossorigin src="./assets/index-DZ-UAvZI.js?v=1785337509"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-CzP7ySOV.css?v=1785337509">
 </head>
   <body class="bg-slate-100 antialiased overflow-x-hidden">
     <div id="root"></div>
