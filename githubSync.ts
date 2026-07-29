@@ -121,7 +121,7 @@ export const syncToGitHubGist = async (rawToken: string, rawGistId?: string): Pr
       method = 'PATCH';
     }
 
-    const response = await fetch(url, {
+    let response = await fetch(url, {
       method,
       headers: {
         'Authorization': `Bearer ${token}`,
@@ -130,6 +130,21 @@ export const syncToGitHubGist = async (rawToken: string, rawGistId?: string): Pr
       },
       body: JSON.stringify(body)
     });
+
+    // 若指定了 Gist ID 執行覆蓋 (PATCH) 但 GitHub 回傳 404，自動改為新建 (POST)
+    if (!response.ok && response.status === 404 && existingGistId) {
+      url = 'https://api.github.com/gists';
+      method = 'POST';
+      response = await fetch(url, {
+        method,
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/vnd.github+json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body)
+      });
+    }
 
     if (!response.ok) {
       const errJson = await response.json().catch(() => ({}));
