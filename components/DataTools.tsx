@@ -1,8 +1,9 @@
 
 import React, { useRef, useState } from 'react';
-import { Download, Upload, FileSpreadsheet, AlertCircle, Trash2, Database, FileJson, HardDriveDownload, FolderOpen, Save, HardDrive, KeyRound, ShieldCheck, Check, X, History, Archive } from 'lucide-react';
+import { Download, Upload, FileSpreadsheet, AlertCircle, Trash2, Database, FileJson, HardDriveDownload, FolderOpen, Save, HardDrive, KeyRound, ShieldCheck, Check, X, History, Archive, Cloud, UploadCloud, DownloadCloud, RefreshCw } from 'lucide-react';
 import { Stock, Transaction, Account, Market, TransactionType, AssetSnapshot, GeneralAssetItem, CashTransaction, CSVSettings, GeneralAssetType, AmortizationMethod, LoanType, KLineData, TechSettings, RecurringCashRule, BudgetItem } from '../types';
 import { generateId, downloadCSVTemplate, exportToCSV } from '../utils';
+import { getGitHubSyncConfig, saveGitHubSyncConfig, syncToGitHubGist, restoreFromGitHubGist } from '../githubSync';
 
 interface Props {
   transactions: Transaction[];
@@ -86,6 +87,60 @@ const DataTools: React.FC<Props> = ({
   const [showRecForm, setShowRecForm] = useState(false);
   const [recOld, setRecOld] = useState('');
   const [recNew, setRecNew] = useState('');
+
+  // GitHub Cloud Sync States
+  const [ghConfig, setGhConfig] = useState(() => getGitHubSyncConfig());
+  const [ghTokenInput, setGhTokenInput] = useState(ghConfig.token);
+  const [ghGistIdInput, setGhGistIdInput] = useState(ghConfig.gistId);
+  const [ghStatusMsg, setGhStatusMsg] = useState('');
+  const [isGhSyncing, setIsGhSyncing] = useState(false);
+
+  const handleSaveGhConfig = () => {
+    const updated = { ...ghConfig, token: ghTokenInput, gistId: ghGistIdInput };
+    saveGitHubSyncConfig(updated);
+    setGhConfig(updated);
+    setGhStatusMsg('✅ 已儲存 GitHub 雲端設定');
+    setTimeout(() => setGhStatusMsg(''), 3000);
+  };
+
+  const handleUploadToGitHub = async () => {
+    if (!ghTokenInput) {
+      alert('請先輸入 GitHub Personal Access Token');
+      return;
+    }
+    setIsGhSyncing(true);
+    setGhStatusMsg('⏳ 正在同步上傳至 GitHub Gist...');
+    const res = await syncToGitHubGist(ghTokenInput, ghGistIdInput);
+    setIsGhSyncing(false);
+    if (res.success) {
+      const updated = getGitHubSyncConfig();
+      setGhConfig(updated);
+      setGhGistIdInput(updated.gistId);
+      setGhStatusMsg(`✅ 上傳成功！Gist ID: ${res.gistId}`);
+    } else {
+      setGhStatusMsg(`❌ 同步失敗：${res.error}`);
+    }
+  };
+
+  const handleRestoreFromGitHub = async () => {
+    if (!ghTokenInput || !ghGistIdInput) {
+      alert('請先填寫 Token 與 Gist ID');
+      return;
+    }
+    if (!confirm('從 GitHub 還原將覆蓋現有本地數據，確定繼續？')) return;
+    setIsGhSyncing(true);
+    setGhStatusMsg('⏳ 正在從 GitHub 下載備份...');
+    const res = await restoreFromGitHubGist(ghTokenInput, ghGistIdInput);
+    setIsGhSyncing(false);
+    if (res.success) {
+      const updated = getGitHubSyncConfig();
+      setGhConfig(updated);
+      setGhStatusMsg('✅ 雲端備份已成功還原！請重新整理頁面載入最新資料。');
+      setTimeout(() => window.location.reload(), 1500);
+    } else {
+      setGhStatusMsg(`❌ 還原失敗：${res.error}`);
+    }
+  };
 
   // Manual JSON Export (Legacy)
   const handleExportJSON = () => {
@@ -664,6 +719,89 @@ const DataTools: React.FC<Props> = ({
                   )}
               </div>
           </div>
+      </div>
+
+      {/* GitHub Cloud Sync Section */}
+      <h4 className="font-bold text-slate-700 text-lg flex items-center gap-2">
+         <Cloud className="text-indigo-600" size={20}/> GitHub 雲端備份與同步
+      </h4>
+      <div className="bg-gradient-to-br from-indigo-50/70 via-white to-slate-50 p-6 rounded-2xl border border-indigo-100/80 shadow-sm space-y-4">
+        <div className="flex flex-col lg:flex-row justify-between lg:items-center gap-4">
+          <div>
+            <h5 className="font-bold text-slate-800 flex items-center gap-2">
+              <UploadCloud size={18} className="text-indigo-600" /> GitHub Gist 雲端自動同步
+            </h5>
+            <p className="text-xs text-slate-500 mt-1">
+              設定個人的 GitHub Token，即可隨時將記帳資料同步至雲端或跨裝置下載備份。
+            </p>
+          </div>
+          {ghConfig.lastSyncedAt && (
+            <div className="text-xs text-slate-500 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-2xs">
+              上次同步時間：<span className="font-bold text-indigo-600">{ghConfig.lastSyncedAt}</span>
+            </div>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+          <div className="space-y-1">
+            <label className="text-xs font-bold text-slate-600 flex items-center gap-1">
+              <KeyRound size={14} /> GitHub Personal Access Token (PAT)
+            </label>
+            <input 
+              type="password"
+              value={ghTokenInput}
+              onChange={e => setGhTokenInput(e.target.value)}
+              placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
+              className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:border-indigo-500 font-mono shadow-2xs"
+            />
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-xs font-bold text-slate-600 flex items-center gap-1">
+              <Database size={14} /> GitHub Gist ID (留空自動建立)
+            </label>
+            <input 
+              type="text"
+              value={ghGistIdInput}
+              onChange={e => setGhGistIdInput(e.target.value)}
+              placeholder="如已有 Gist ID 請填入，否則自動生成"
+              className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:border-indigo-500 font-mono shadow-2xs"
+            />
+          </div>
+        </div>
+
+        {ghStatusMsg && (
+          <div className="text-xs font-bold px-3 py-2 rounded-xl bg-white border border-indigo-100 text-indigo-800">
+            {ghStatusMsg}
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center gap-3 pt-2">
+          <button 
+            onClick={handleSaveGhConfig}
+            className="text-xs font-bold px-4 py-2 bg-white text-slate-700 hover:bg-slate-50 border border-slate-200 rounded-xl transition-all shadow-2xs"
+          >
+            儲存設定
+          </button>
+
+          <button 
+            onClick={handleUploadToGitHub}
+            disabled={isGhSyncing}
+            className="flex items-center gap-1.5 text-xs font-bold px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl transition-all shadow-md active:scale-95 disabled:opacity-50"
+          >
+            <UploadCloud size={15} />
+            {isGhSyncing ? '同步上傳中...' : '備份上傳至 GitHub'}
+          </button>
+
+          <button 
+            onClick={handleRestoreFromGitHub}
+            disabled={isGhSyncing}
+            className="flex items-center gap-1.5 text-xs font-bold px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-xl transition-all shadow-md active:scale-95 disabled:opacity-50"
+          >
+            <DownloadCloud size={15} />
+            {isGhSyncing ? '還原下載中...' : '從 GitHub 下載還原'}
+          </button>
+        </div>
       </div>
 
       <div className="w-full h-px bg-slate-200 my-4"></div>
