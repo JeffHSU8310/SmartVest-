@@ -156,19 +156,24 @@ export const restoreFromGitHubGist = async (rawToken: string, rawGistId: string)
 
     let rawJsonContent = file.content;
 
-    // 關鍵修復：若 Gist 內容被 GitHub API 截斷 (truncated) 或需完整數據，從 raw_url 取得完整無截斷全量內容
-    if (file.truncated || !rawJsonContent || file.raw_url) {
+    // 關鍵修復：若 Gist 內容被 GitHub API 截斷 (truncated) 或需要下載全量資料
+    // 注意：存取 raw_url (gist.githubusercontent.com) 時切勿攜帶 Authorization Header，否則會被瀏覽器 CORS 預檢阻擋！
+    if (file.truncated || file.raw_url) {
       try {
-        const rawRes = await fetch(file.raw_url, {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-          }
-        });
+        const cacheBusterUrl = file.raw_url.includes('?') 
+          ? `${file.raw_url}&_t=${Date.now()}` 
+          : `${file.raw_url}?_t=${Date.now()}`;
+
+        // 使用乾淨不帶 Authorization 的 fetch，擺脫 CORS 限制
+        const rawRes = await fetch(cacheBusterUrl);
         if (rawRes.ok) {
-          rawJsonContent = await rawRes.text();
+          const fetchedText = await rawRes.text();
+          if (fetchedText && fetchedText.trim().endsWith('}')) {
+            rawJsonContent = fetchedText;
+          }
         }
       } catch (rawErr) {
-        console.warn('Failed to fetch from raw_url, fallback to file.content', rawErr);
+        console.warn('Failed to fetch from raw_url, fallbacking...', rawErr);
       }
     }
 
@@ -176,7 +181,25 @@ export const restoreFromGitHubGist = async (rawToken: string, rawGistId: string)
       return { success: false, error: 'Gist 備份內容為空' };
     }
 
-    const backupPayload = JSON.parse(rawJsonContent);
+    let backupPayload: any = null;
+    try {
+      backupPayload = JSON.parse(rawJsonContent);
+    } catch (parseErr: any) {
+      // 備用二次修正：若字串被極端截斷，嘗試補齊尾部封閉符號
+      let repairedText = rawJsonContent.trim();
+      if (!repairedText.endsWith('}')) {
+        const lastBrace = repairedText.lastIndexOf('}');
+        if (lastBrace > 0) {
+          repairedText = repairedText.substring(0, lastBrace + 1);
+        }
+      }
+      try {
+        backupPayload = JSON.parse(repairedText);
+      } catch (e2) {
+        return { success: false, error: `雲端資料格式不完整 (${parseErr.message})，請點擊「備份上傳 GitHub」建立最新備份檔。` };
+      }
+    }
+
     const ok = importAllAppData(backupPayload);
     if (ok) {
       const currentConfig = getGitHubSyncConfig();
