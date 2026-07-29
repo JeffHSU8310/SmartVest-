@@ -369,7 +369,7 @@ function App() {
     | "etf_info"
     | "nova"
     | "screener"
-  >("market");
+  >("overview");
 
   const [isAppUnlocked, setIsAppUnlocked] = useState(false);
   const [appPassword, setAppPassword] = useState(
