@@ -496,9 +496,36 @@ function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const navContainerRef = useRef<HTMLDivElement>(null);
 
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  const checkScrollState = useCallback(() => {
+    const el = navContainerRef.current;
+    if (!el) return;
+    const { scrollLeft, scrollWidth, clientWidth } = el;
+    setCanScrollLeft(scrollLeft > 2);
+    setCanScrollRight(scrollLeft < scrollWidth - clientWidth - 2);
+  }, []);
+
+  useEffect(() => {
+    const el = navContainerRef.current;
+    if (!el) return;
+    checkScrollState();
+    el.addEventListener("scroll", checkScrollState);
+    window.addEventListener("resize", checkScrollState);
+    const observer = new ResizeObserver(() => checkScrollState());
+    observer.observe(el);
+
+    return () => {
+      el.removeEventListener("scroll", checkScrollState);
+      window.removeEventListener("resize", checkScrollState);
+      observer.disconnect();
+    };
+  }, [checkScrollState, navOrder]);
+
   const handleScrollNav = (direction: 'left' | 'right') => {
     if (navContainerRef.current) {
-      const amount = direction === 'left' ? -260 : 260;
+      const amount = direction === 'left' ? -280 : 280;
       navContainerRef.current.scrollBy({ left: amount, behavior: 'smooth' });
     }
   };
@@ -2413,52 +2440,72 @@ function App() {
         </header>
 
         <div className="px-2 sm:px-4 pb-2">
-          <div className="w-full max-w-[1920px] px-2 sm:px-4 xl:px-6 mx-auto flex items-center justify-between gap-1.5 relative">
-            <button 
-              onClick={() => handleScrollNav('left')}
-              title="向左滾動選單"
-              className="2xl:hidden flex items-center justify-center p-1.5 rounded-full bg-white/90 text-slate-600 hover:bg-slate-800 hover:text-white shadow-md border border-slate-200 transition-all shrink-0 z-10 active:scale-95"
-            >
-              <ChevronLeft size={16} />
-            </button>
+          <div className="w-full max-w-[1920px] px-2 sm:px-4 xl:px-6 mx-auto flex items-center gap-1.5 relative">
+            {canScrollLeft && (
+              <button 
+                onClick={() => handleScrollNav('left')}
+                title="向左滾動選單"
+                className="flex items-center justify-center p-1.5 rounded-full bg-white/90 text-slate-600 hover:bg-slate-800 hover:text-white shadow-md border border-slate-200 transition-all shrink-0 z-20 active:scale-95"
+              >
+                <ChevronLeft size={16} />
+              </button>
+            )}
 
-            <nav 
-              ref={navContainerRef}
-              className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto 2xl:overflow-visible 2xl:flex-wrap no-scrollbar py-1 w-full flex-nowrap 2xl:flex-wrap scroll-smooth px-1"
-            >
-              {navOrder.map((id) => {
-                const tab = NAV_ITEMS.find((t) => t.id === id);
-                if (!tab) return null;
-                const Icon = tab.icon;
-                const isDragging = draggingTabId === tab.id;
-                return (
-                  <button
-                    key={tab.id}
-                    draggable
-                    onDragStart={(e) => handleTabDragStart(e, tab.id)}
-                    onDragEnd={handleTabDragEnd}
-                    onDragOver={handleTabDragOver}
-                    onDrop={(e) => handleTabDrop(e, tab.id)}
-                    onClick={() => {
-                      setActiveTab(tab.id as any);
-                      if (tab.id === "market") setMarketSymbol(null);
-                    }}
-                    className={`flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-full text-xs font-bold transition-all cursor-pointer select-none shrink-0 active:scale-95 ${activeTab === tab.id ? "bg-slate-800 text-white shadow-md" : "bg-white/80 text-slate-600 hover:bg-white border border-slate-200/50"} ${isDragging ? "opacity-50 ring-2 ring-blue-300" : ""}`}
-                  >
-                    <Icon size={14} className="shrink-0" />
-                    <span className="whitespace-nowrap tracking-tight">{tab.label}</span>
-                  </button>
-                );
-              })}
-            </nav>
+            <div className="relative flex-1 min-w-0 overflow-hidden">
+              {canScrollLeft && (
+                <div className="pointer-events-none absolute left-0 top-0 bottom-0 w-6 bg-gradient-to-r from-[#f3f4f6] to-transparent z-10" />
+              )}
 
-            <button 
-              onClick={() => handleScrollNav('right')}
-              title="向右滾動選單看更多按鈕"
-              className="2xl:hidden flex items-center justify-center p-1.5 rounded-full bg-white/90 text-slate-600 hover:bg-slate-800 hover:text-white shadow-md border border-slate-200 transition-all shrink-0 z-10 active:scale-95 animate-pulse"
-            >
-              <ChevronRight size={16} />
-            </button>
+              <nav 
+                ref={navContainerRef}
+                onWheel={(e) => {
+                  if (navContainerRef.current && e.deltaY !== 0) {
+                    navContainerRef.current.scrollBy({ left: e.deltaY, behavior: 'auto' });
+                  }
+                }}
+                className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto no-scrollbar py-1 w-full flex-nowrap scroll-smooth px-1"
+              >
+                {navOrder.map((id) => {
+                  const tab = NAV_ITEMS.find((t) => t.id === id);
+                  if (!tab) return null;
+                  const Icon = tab.icon;
+                  const isDragging = draggingTabId === tab.id;
+                  return (
+                    <button
+                      key={tab.id}
+                      draggable
+                      onDragStart={(e) => handleTabDragStart(e, tab.id)}
+                      onDragEnd={handleTabDragEnd}
+                      onDragOver={handleTabDragOver}
+                      onDrop={(e) => handleTabDrop(e, tab.id)}
+                      onClick={(e) => {
+                        setActiveTab(tab.id as any);
+                        if (tab.id === "market") setMarketSymbol(null);
+                        (e.currentTarget as HTMLElement).scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
+                      }}
+                      className={`flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-full text-xs font-bold transition-all cursor-pointer select-none shrink-0 active:scale-95 ${activeTab === tab.id ? "bg-slate-800 text-white shadow-md" : "bg-white/80 text-slate-600 hover:bg-white border border-slate-200/50"} ${isDragging ? "opacity-50 ring-2 ring-blue-300" : ""}`}
+                    >
+                      <Icon size={14} className="shrink-0" />
+                      <span className="whitespace-nowrap tracking-tight">{tab.label}</span>
+                    </button>
+                  );
+                })}
+              </nav>
+
+              {canScrollRight && (
+                <div className="pointer-events-none absolute right-0 top-0 bottom-0 w-6 bg-gradient-to-l from-[#f3f4f6] to-transparent z-10" />
+              )}
+            </div>
+
+            {canScrollRight && (
+              <button 
+                onClick={() => handleScrollNav('right')}
+                title="向右滾動選單看更多按鈕"
+                className="flex items-center justify-center p-1.5 rounded-full bg-white/90 text-slate-600 hover:bg-slate-800 hover:text-white shadow-md border border-slate-200 transition-all shrink-0 z-20 active:scale-95 animate-pulse"
+              >
+                <ChevronRight size={16} />
+              </button>
+            )}
           </div>
         </div>
       </div>
