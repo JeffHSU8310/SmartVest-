@@ -50,15 +50,36 @@ export const exportAllAppData = (): Record<string, any> => {
 
 // 恢復雲端數據到 LocalStorage
 export const importAllAppData = (backupPayload: Record<string, any>): boolean => {
-  if (!backupPayload || !backupPayload.data) return false;
+  if (!backupPayload || typeof backupPayload !== 'object') return false;
   try {
-    const data = backupPayload.data;
-    Object.keys(data).forEach(key => {
-      const val = data[key];
-      if (val !== null && val !== undefined) {
-        localStorage.setItem(key, typeof val === 'string' ? val : JSON.stringify(val));
+    let dataMap: Record<string, any> = {};
+
+    if (backupPayload.data && typeof backupPayload.data === 'object') {
+      dataMap = backupPayload.data;
+    } else {
+      dataMap = backupPayload;
+    }
+
+    // 1. 若內容包含 smartvest_data_v2 核心主物件
+    if (dataMap.smartvest_data_v2) {
+      const val = dataMap.smartvest_data_v2;
+      localStorage.setItem('smartvest_data_v2', typeof val === 'string' ? val : JSON.stringify(val));
+    } 
+    // 2. 若內容為直接的股票/交易/帳戶物件 { stocks, transactions, accounts }
+    else if (dataMap.stocks || dataMap.transactions || dataMap.accounts) {
+      localStorage.setItem('smartvest_data_v2', JSON.stringify(dataMap));
+    }
+    
+    // 3. 同步寫入所有包含的附屬 Key
+    Object.keys(dataMap).forEach(key => {
+      if (key !== 'smartvest_data_v2') {
+        const val = dataMap[key];
+        if (val !== null && val !== undefined) {
+          localStorage.setItem(key, typeof val === 'string' ? val : JSON.stringify(val));
+        }
       }
     });
+
     return true;
   } catch (e) {
     console.error('Failed to import app data', e);
@@ -68,8 +89,13 @@ export const importAllAppData = (backupPayload: Record<string, any>): boolean =>
 
 // 建立或更新 GitHub Gist
 export const syncToGitHubGist = async (rawToken: string, rawGistId?: string): Promise<{ success: boolean; gistId?: string; error?: string }> => {
-  const token = (rawToken || '').trim();
-  const existingGistId = (rawGistId || '').trim();
+  const token = (rawToken || '').trim().replace(/^["']|["']$/g, '');
+  let existingGistId = (rawGistId || '').trim();
+
+  if (existingGistId.includes('/')) {
+    const parts = existingGistId.split('/').filter(Boolean);
+    existingGistId = parts[parts.length - 1];
+  }
 
   if (!token) return { success: false, error: '未提供 GitHub Token' };
 
@@ -130,8 +156,13 @@ export const syncToGitHubGist = async (rawToken: string, rawGistId?: string): Pr
 
 // 從 GitHub Gist 下載並還原資料
 export const restoreFromGitHubGist = async (rawToken: string, rawGistId: string): Promise<{ success: boolean; error?: string }> => {
-  const token = (rawToken || '').trim();
-  const gistId = (rawGistId || '').trim();
+  const token = (rawToken || '').trim().replace(/^["']|["']$/g, '');
+  let gistId = (rawGistId || '').trim();
+
+  if (gistId.includes('/')) {
+    const parts = gistId.split('/').filter(Boolean);
+    gistId = parts[parts.length - 1];
+  }
 
   if (!token || !gistId) return { success: false, error: '未提供完整 GitHub Token 或 Gist ID' };
 
@@ -149,7 +180,7 @@ export const restoreFromGitHubGist = async (rawToken: string, rawGistId: string)
     }
 
     const resData = await response.json();
-    const file = resData.files?.[GIST_FILENAME];
+    const file = resData.files?.[GIST_FILENAME] || (resData.files ? Object.values(resData.files)[0] : null) as any;
     if (!file) {
       return { success: false, error: 'Gist 中找不到 SmartVest 備份檔案' };
     }
@@ -164,7 +195,6 @@ export const restoreFromGitHubGist = async (rawToken: string, rawGistId: string)
           ? `${file.raw_url}&_t=${Date.now()}` 
           : `${file.raw_url}?_t=${Date.now()}`;
 
-        // 使用乾淨不帶 Authorization 的 fetch，擺脫 CORS 限制
         const rawRes = await fetch(cacheBusterUrl);
         if (rawRes.ok) {
           const fetchedText = await rawRes.text();
@@ -185,7 +215,6 @@ export const restoreFromGitHubGist = async (rawToken: string, rawGistId: string)
     try {
       backupPayload = JSON.parse(rawJsonContent);
     } catch (parseErr: any) {
-      // 備用二次修正：若字串被極端截斷，嘗試補齊尾部封閉符號
       let repairedText = rawJsonContent.trim();
       if (!repairedText.endsWith('}')) {
         const lastBrace = repairedText.lastIndexOf('}');

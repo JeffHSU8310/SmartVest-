@@ -123,8 +123,14 @@ const DataTools: React.FC<Props> = ({
   };
 
   const handleRestoreFromGitHub = async () => {
-    const token = (ghTokenInput || '').trim();
-    const gistId = (ghGistIdInput || '').trim();
+    let token = (ghTokenInput || '').trim();
+    let gistId = (ghGistIdInput || '').trim();
+
+    if (gistId.includes('/')) {
+      const parts = gistId.split('/').filter(Boolean);
+      gistId = parts[parts.length - 1];
+      setGhGistIdInput(gistId);
+    }
 
     if (!token || !gistId) {
       alert('請先填寫正確的 GitHub Token 與 Gist ID');
@@ -138,7 +144,18 @@ const DataTools: React.FC<Props> = ({
     if (res.success) {
       const updated = getGitHubSyncConfig();
       setGhConfig(updated);
-      setGhStatusMsg('🎉 雲端備份已成功還原！畫面即將重新整理載入最新帳目...');
+
+      try {
+        const rawSaved = localStorage.getItem('smartvest_data_v2');
+        if (rawSaved) {
+          const parsed = JSON.parse(rawSaved);
+          if (parsed) onImportJSON(parsed);
+        }
+      } catch (e) {
+        console.warn('Failed to parse in-memory restore payload', e);
+      }
+
+      setGhStatusMsg('🎉 雲端備份已成功還原！畫面即將更新載入最新帳目...');
       setTimeout(() => {
         window.location.reload();
       }, 1200);
