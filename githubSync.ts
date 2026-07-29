@@ -100,7 +100,7 @@ export const syncToGitHubGist = async (rawToken: string, rawGistId?: string): Pr
   if (!token) return { success: false, error: '未提供 GitHub Token' };
 
   const payload = exportAllAppData();
-  const content = JSON.stringify(payload, null, 2);
+  const content = JSON.stringify(payload);
 
   const body: any = {
     description: 'SmartVest 存股記帳雲端備份',
