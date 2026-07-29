@@ -882,7 +882,7 @@ const DataTools: React.FC<Props> = ({
         />
         
         {/* Hidden inputs for legacy/fallback support */}
-        <input type="file" accept=".json" ref={jsonInputRef} onChange={handleImportJSONInput} className="hidden" />
+        <input type="file" accept=".json,application/json,text/plain,*" ref={jsonInputRef} onChange={handleImportJSONInput} className="hidden" />
         <ActionCard 
            icon={Upload}
            title="手動上傳 JSON"

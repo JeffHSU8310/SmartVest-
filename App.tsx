@@ -2383,7 +2383,7 @@ function App() {
             <div className="flex items-center gap-2">
               <input
                 type="file"
-                accept=".json"
+                accept=".json,application/json,text/plain,*"
                 ref={fileInputRef}
                 onChange={handleLegacyFileImport}
                 className="hidden"
