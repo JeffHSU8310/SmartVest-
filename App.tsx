@@ -2413,18 +2413,18 @@ function App() {
         </header>
 
         <div className="px-2 sm:px-4 pb-2">
-          <div className="w-full xl:px-6 mx-auto flex items-center justify-between gap-2 relative">
+          <div className="w-full max-w-[1920px] px-2 sm:px-4 xl:px-6 mx-auto flex items-center justify-between gap-1.5 relative">
             <button 
               onClick={() => handleScrollNav('left')}
               title="向左滾動選單"
-              className="flex items-center justify-center p-1.5 rounded-full bg-white/90 text-slate-600 hover:bg-slate-800 hover:text-white shadow-md border border-slate-200 transition-all shrink-0 z-10 active:scale-95"
+              className="2xl:hidden flex items-center justify-center p-1.5 rounded-full bg-white/90 text-slate-600 hover:bg-slate-800 hover:text-white shadow-md border border-slate-200 transition-all shrink-0 z-10 active:scale-95"
             >
               <ChevronLeft size={16} />
             </button>
 
             <nav 
               ref={navContainerRef}
-              className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto no-scrollbar py-1 w-full flex-nowrap scroll-smooth px-1"
+              className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto 2xl:overflow-visible 2xl:flex-wrap no-scrollbar py-1 w-full flex-nowrap 2xl:flex-wrap scroll-smooth px-1"
             >
               {navOrder.map((id) => {
                 const tab = NAV_ITEMS.find((t) => t.id === id);
@@ -2443,7 +2443,7 @@ function App() {
                       setActiveTab(tab.id as any);
                       if (tab.id === "market") setMarketSymbol(null);
                     }}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold transition-all cursor-pointer select-none shrink-0 active:scale-95 ${activeTab === tab.id ? "bg-slate-800 text-white shadow-md" : "bg-white/80 text-slate-600 hover:bg-white border border-slate-200/50"} ${isDragging ? "opacity-50 ring-2 ring-blue-300" : ""}`}
+                    className={`flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-full text-xs font-bold transition-all cursor-pointer select-none shrink-0 active:scale-95 ${activeTab === tab.id ? "bg-slate-800 text-white shadow-md" : "bg-white/80 text-slate-600 hover:bg-white border border-slate-200/50"} ${isDragging ? "opacity-50 ring-2 ring-blue-300" : ""}`}
                   >
                     <Icon size={14} className="shrink-0" />
                     <span className="whitespace-nowrap tracking-tight">{tab.label}</span>
@@ -2455,7 +2455,7 @@ function App() {
             <button 
               onClick={() => handleScrollNav('right')}
               title="向右滾動選單看更多按鈕"
-              className="flex items-center justify-center p-1.5 rounded-full bg-white/90 text-slate-600 hover:bg-slate-800 hover:text-white shadow-md border border-slate-200 transition-all shrink-0 z-10 active:scale-95 animate-pulse"
+              className="2xl:hidden flex items-center justify-center p-1.5 rounded-full bg-white/90 text-slate-600 hover:bg-slate-800 hover:text-white shadow-md border border-slate-200 transition-all shrink-0 z-10 active:scale-95 animate-pulse"
             >
               <ChevronRight size={16} />
             </button>
@@ -2463,7 +2463,7 @@ function App() {
         </div>
       </div>
 
-      <main className="w-full xl:px-6 mx-auto px-4 space-y-4 pt-2">
+      <main className="w-full max-w-[1920px] mx-auto px-2 sm:px-4 xl:px-6 space-y-4 pt-2">
         <div className="min-h-[500px]">
           {activeTab === "market" && (
             <MarketMonitor
