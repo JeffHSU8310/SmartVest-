@@ -67,6 +67,8 @@ import {
   Target,
   Layers,
   Crosshair,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 
 import { Filesystem, Directory, Encoding } from "@capacitor/filesystem";
@@ -492,6 +494,14 @@ function App() {
   const [draggingTabId, setDraggingTabId] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const navContainerRef = useRef<HTMLDivElement>(null);
+
+  const handleScrollNav = (direction: 'left' | 'right') => {
+    if (navContainerRef.current) {
+      const amount = direction === 'left' ? -260 : 260;
+      navContainerRef.current.scrollBy({ left: amount, behavior: 'smooth' });
+    }
+  };
 
   const mainStocks = useMemo(() => {
     return stocks;
@@ -2403,8 +2413,19 @@ function App() {
         </header>
 
         <div className="px-2 sm:px-4 pb-2">
-          <div className="w-full xl:px-6 mx-auto flex items-center justify-between gap-3">
-            <nav className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto no-scrollbar py-1 w-full flex-nowrap scroll-smooth">
+          <div className="w-full xl:px-6 mx-auto flex items-center justify-between gap-2 relative">
+            <button 
+              onClick={() => handleScrollNav('left')}
+              title="向左滾動選單"
+              className="flex items-center justify-center p-1.5 rounded-full bg-white/90 text-slate-600 hover:bg-slate-800 hover:text-white shadow-md border border-slate-200 transition-all shrink-0 z-10 active:scale-95"
+            >
+              <ChevronLeft size={16} />
+            </button>
+
+            <nav 
+              ref={navContainerRef}
+              className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto no-scrollbar py-1 w-full flex-nowrap scroll-smooth px-1"
+            >
               {navOrder.map((id) => {
                 const tab = NAV_ITEMS.find((t) => t.id === id);
                 if (!tab) return null;
@@ -2430,7 +2451,14 @@ function App() {
                 );
               })}
             </nav>
-            <div className="hidden sm:flex items-center gap-3"></div>
+
+            <button 
+              onClick={() => handleScrollNav('right')}
+              title="向右滾動選單看更多按鈕"
+              className="flex items-center justify-center p-1.5 rounded-full bg-white/90 text-slate-600 hover:bg-slate-800 hover:text-white shadow-md border border-slate-200 transition-all shrink-0 z-10 active:scale-95 animate-pulse"
+            >
+              <ChevronRight size={16} />
+            </button>
           </div>
         </div>
       </div>
