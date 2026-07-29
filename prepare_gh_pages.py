@@ -7,6 +7,7 @@
 import os
 import sys
 import shutil
+import time
 
 # 強制控制台 UTF-8
 if sys.platform == 'win32':
@@ -34,5 +35,24 @@ def deploy_dist_to_root():
     shutil.copytree(dist_assets, target_assets)
     print("[OK] 已成功複製編譯後的 assets JS/CSS 資源檔至根目錄！")
 
+    # 複製與加工 index.html，寫入防快取標籤與 timestamp 版本號
+    dist_html = os.path.join(dist_dir, 'index.html')
+    target_html = os.path.join(project_dir, 'index.html')
+    if os.path.exists(dist_html):
+        with open(dist_html, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        ts = int(time.time())
+        meta_tags = '<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />\n    <meta http-equiv="Pragma" content="no-cache" />\n    <meta http-equiv="Expires" content="0" />'
+        if '<head>' in content:
+            content = content.replace('<head>', f'<head>\n    {meta_tags}')
+        
+        content = content.replace('.js"', f'.js?v={ts}"').replace('.css"', f'.css?v={ts}"')
+
+        with open(target_html, 'w', encoding='utf-8') as f:
+            f.write(content)
+        print(f"[OK] 已成功寫入抗快取標籤與版本號 (v={ts}) 至 index.html！")
+
 if __name__ == '__main__':
     deploy_dist_to_root()
+
