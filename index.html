@@ -31,6 +31,21 @@
         });
       }
     </script>
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <script>
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then(function(regs) {
+          for(let r of regs) r.unregister();
+        });
+      }
+      if ('caches' in window) {
+        caches.keys().then(function(names) {
+          for (let n of names) caches.delete(n);
+        });
+      }
+    </script>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
@@ -43,8 +58,10 @@
     </style>
 
 
-    <script type="module" crossorigin src="./assets/index-Bq0Oj2zJ.js?v=1785338806"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-CzP7ySOV.css?v=1785338806">
+
+
+    <script type="module" crossorigin src="./assets/index-DkXWrtgz.js?v=1785339157"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-CzP7ySOV.css?v=1785339157">
   </head>
   <body class="bg-slate-100 antialiased overflow-x-hidden">
     <div id="root"></div>

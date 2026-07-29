@@ -102,98 +102,96 @@ export const syncToGitHubGist = async (rawToken: string, rawGistId?: string): Pr
   const payload = exportAllAppData();
   const content = JSON.stringify(payload);
 
-  const CHUNK_SIZE = 800000; // 800KB 分割
-  const filesPayload: any = {};
-
-  if (content.length > CHUNK_SIZE) {
-    const numChunks = Math.ceil(content.length / CHUNK_SIZE);
-    for (let i = 0; i < numChunks; i++) {
-      const chunkStr = content.substring(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-      const chunkName = `smartvest_backup_${i.toString().padStart(2, '0')}.json`;
-      filesPayload[chunkName] = { content: chunkStr };
-    }
-    // 刪除可能存在的舊版單一巨大檔案
-    filesPayload[GIST_FILENAME] = null;
-  } else {
-    // 檔案較小則直接使用單一檔案
-    filesPayload[GIST_FILENAME] = { content: content };
-    // 嘗試清理可能殘留的 chunk
-    for (let i = 0; i < 10; i++) {
-       filesPayload[`smartvest_backup_${i.toString().padStart(2, '0')}.json`] = null;
-    }
-  }
-
-  const body: any = {
-    description: 'SmartVest 存股記帳雲端備份',
-    public: false,
-    files: filesPayload
-  };
-
   try {
-    const cleanBodyForPost = (originalBody: any) => {
-      const newFiles: any = {};
-      for (const k of Object.keys(originalBody.files)) {
-        if (originalBody.files[k] !== null) {
-          newFiles[k] = originalBody.files[k];
+    const CHUNK_SIZE = 800000; // 800KB
+    const numChunks = Math.ceil(content.length / CHUNK_SIZE);
+
+    const sendGistReq = async (url: string, method: string, filesObj: any) => {
+      if (method === 'POST') {
+        for (const k of Object.keys(filesObj)) {
+          if (filesObj[k] === null) delete filesObj[k];
         }
       }
-      return { ...originalBody, files: newFiles };
-    };
-
-    let url = 'https://api.github.com/gists';
-    let method = 'POST';
-
-    if (existingGistId) {
-      url = `https://api.github.com/gists/${existingGistId}`;
-      method = 'PATCH';
-    }
-
-    let requestBody = method === 'POST' ? cleanBodyForPost(body) : body;
-
-    let response = await fetch(url, {
-      method,
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Accept': 'application/vnd.github+json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(requestBody)
-    });
-
-    // 若指定了 Gist ID 執行覆蓋 (PATCH) 但 GitHub 回傳 404，自動改為新建 (POST)
-    if (!response.ok && response.status === 404 && existingGistId) {
-      url = 'https://api.github.com/gists';
-      method = 'POST';
-      requestBody = cleanBodyForPost(body);
-      response = await fetch(url, {
+      return await fetch(url, {
         method,
         headers: {
           'Authorization': `Bearer ${token}`,
           'Accept': 'application/vnd.github+json',
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(requestBody)
+        body: JSON.stringify({ description: 'SmartVest 存股記帳雲端備份', public: false, files: filesObj })
       });
+    };
+
+    let currentUrl = existingGistId ? `https://api.github.com/gists/${existingGistId}` : 'https://api.github.com/gists';
+    let currentMethod = existingGistId ? 'PATCH' : 'POST';
+    let finalGistId = existingGistId;
+
+    if (numChunks <= 1) {
+      const filesPayload: any = { [GIST_FILENAME]: { content: content } };
+      if (currentMethod === 'PATCH') {
+        for (let i = 0; i < 10; i++) filesPayload[`smartvest_backup_${i.toString().padStart(2, '0')}.json`] = null;
+      }
+      
+      let res = await sendGistReq(currentUrl, currentMethod, filesPayload);
+      if (!res.ok && res.status === 404 && existingGistId) {
+        currentUrl = 'https://api.github.com/gists';
+        currentMethod = 'POST';
+        for (let i = 0; i < 10; i++) delete filesPayload[`smartvest_backup_${i.toString().padStart(2, '0')}.json`];
+        res = await sendGistReq(currentUrl, currentMethod, filesPayload);
+      }
+      
+      if (!res.ok) {
+        let errStr = `HTTP ${res.status}`;
+        try { const errJson = await res.json(); if (errJson.message) errStr = errJson.message; } catch(e){}
+        return { success: false, error: errStr };
+      }
+      
+      const resData = await res.json();
+      finalGistId = resData.id;
+    } else {
+      for (let i = 0; i < numChunks; i++) {
+        const chunkStr = content.substring(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+        const chunkName = `smartvest_backup_${i.toString().padStart(2, '0')}.json`;
+        const filesPayload: any = { [chunkName]: { content: chunkStr } };
+        
+        if (i === 0 && currentMethod === 'PATCH') {
+          filesPayload[GIST_FILENAME] = null; 
+        }
+
+        let res = await sendGistReq(currentUrl, currentMethod, filesPayload);
+        
+        if (i === 0 && !res.ok && res.status === 404 && existingGistId) {
+          currentUrl = 'https://api.github.com/gists';
+          currentMethod = 'POST';
+          delete filesPayload[GIST_FILENAME];
+          res = await sendGistReq(currentUrl, currentMethod, filesPayload);
+        }
+        
+        if (!res.ok) {
+           let errStr = `HTTP ${res.status}`;
+           try { const errJson = await res.json(); if (errJson.message) errStr = errJson.message; } catch(e){}
+           return { success: false, error: errStr };
+        }
+        
+        if (i === 0 && currentMethod === 'POST') {
+          const resData = await res.json();
+          finalGistId = resData.id;
+          currentUrl = `https://api.github.com/gists/${finalGistId}`;
+          currentMethod = 'PATCH';
+        }
+      }
     }
 
-    if (!response.ok) {
-      const errJson = await response.json().catch(() => ({}));
-      return { success: false, error: errJson.message || `HTTP ${response.status}` };
-    }
-
-    const resData = await response.json();
-    const newGistId = resData.id;
-
-    // 更新存檔時間
     const currentConfig = getGitHubSyncConfig();
     saveGitHubSyncConfig({
       ...currentConfig,
       token,
-      gistId: newGistId,
+      gistId: finalGistId,
       lastSyncedAt: new Date().toLocaleString('zh-TW')
     });
 
-    return { success: true, gistId: newGistId };
+    return { success: true, gistId: finalGistId };
   } catch (e: any) {
     return { success: false, error: e.message || '連線至 GitHub 失敗' };
   }
