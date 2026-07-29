@@ -26,6 +26,8 @@ test.js
 test3.js
 test5.js
 tmp_inputs.txt
+check_size.py
+list_source_files.py
 *.html.tmp
 moneydj_*.html
 yahoo_*.html
