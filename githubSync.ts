@@ -126,20 +126,34 @@ export const syncToGitHubGist = async (rawToken: string, rawGistId?: string): Pr
     let currentUrl = existingGistId ? `https://api.github.com/gists/${existingGistId}` : 'https://api.github.com/gists';
     let currentMethod = existingGistId ? 'PATCH' : 'POST';
     let finalGistId = existingGistId;
+    let existingFiles: Record<string, any> = {};
+
+    if (existingGistId) {
+      try {
+        const checkRes = await fetch(currentUrl, { headers: { 'Authorization': `Bearer ${token}` } });
+        if (checkRes.ok) {
+          const checkData = await checkRes.json();
+          existingFiles = checkData.files || {};
+        } else if (checkRes.status === 404) {
+          currentUrl = 'https://api.github.com/gists';
+          currentMethod = 'POST';
+          existingGistId = ''; // Reset so we don't try to PATCH
+        }
+      } catch(e) {}
+    }
 
     if (numChunks <= 1) {
       const filesPayload: any = { [GIST_FILENAME]: { content: content } };
       if (currentMethod === 'PATCH') {
-        for (let i = 0; i < 10; i++) filesPayload[`smartvest_backup_${i.toString().padStart(2, '0')}.json`] = null;
+        for (let i = 0; i < 10; i++) {
+          const chunkName = `smartvest_backup_${i.toString().padStart(2, '0')}.json`;
+          if (existingFiles[chunkName]) {
+            filesPayload[chunkName] = null;
+          }
+        }
       }
       
       let res = await sendGistReq(currentUrl, currentMethod, filesPayload);
-      if (!res.ok && res.status === 404 && existingGistId) {
-        currentUrl = 'https://api.github.com/gists';
-        currentMethod = 'POST';
-        for (let i = 0; i < 10; i++) delete filesPayload[`smartvest_backup_${i.toString().padStart(2, '0')}.json`];
-        res = await sendGistReq(currentUrl, currentMethod, filesPayload);
-      }
       
       if (!res.ok) {
         let errStr = `HTTP ${res.status}`;
@@ -156,17 +170,12 @@ export const syncToGitHubGist = async (rawToken: string, rawGistId?: string): Pr
         const filesPayload: any = { [chunkName]: { content: chunkStr } };
         
         if (i === 0 && currentMethod === 'PATCH') {
-          filesPayload[GIST_FILENAME] = null; 
+          if (existingFiles[GIST_FILENAME]) {
+            filesPayload[GIST_FILENAME] = null; 
+          }
         }
 
         let res = await sendGistReq(currentUrl, currentMethod, filesPayload);
-        
-        if (i === 0 && !res.ok && res.status === 404 && existingGistId) {
-          currentUrl = 'https://api.github.com/gists';
-          currentMethod = 'POST';
-          delete filesPayload[GIST_FILENAME];
-          res = await sendGistReq(currentUrl, currentMethod, filesPayload);
-        }
         
         if (!res.ok) {
            let errStr = `HTTP ${res.status}`;
