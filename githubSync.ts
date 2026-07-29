@@ -242,11 +242,21 @@ export const restoreFromGitHubGist = async (rawToken: string, rawGistId: string)
       // 組合所有 chunks
       for (const k of chunkKeys) {
         const chunkFile = resData.files[k];
-        if (chunkFile.truncated) {
-          // 極端情況防呆：理論上 800KB 不會被 truncated
-          return { success: false, error: '部分分割檔案意外遭到 GitHub 截斷，請重新備份上傳。' };
+        if (chunkFile.truncated && chunkFile.raw_url) {
+          try {
+            const rawRes = await fetch(chunkFile.raw_url, { cache: 'no-cache' });
+            if (rawRes.ok) {
+              const rawText = await rawRes.text();
+              rawJsonContent += rawText;
+            } else {
+              throw new Error(`HTTP ${rawRes.status}`);
+            }
+          } catch (err) {
+            return { success: false, error: `下載分割檔 ${k} 失敗，請重試。` };
+          }
+        } else {
+          rawJsonContent += (chunkFile.content || '');
         }
-        rawJsonContent += (chunkFile.content || '');
       }
       rawFetchSuccess = true;
     } else {
