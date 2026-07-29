@@ -2443,10 +2443,10 @@ function App() {
                       setActiveTab(tab.id as any);
                       if (tab.id === "market") setMarketSymbol(null);
                     }}
-                    className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-5 py-1.5 sm:py-2 rounded-full text-xs sm:text-sm font-bold transition-all cursor-pointer select-none shrink-0 active:scale-95 ${activeTab === tab.id ? "bg-slate-800 text-white shadow-md" : "bg-white/80 text-slate-600 hover:bg-white border border-slate-200/50"} ${isDragging ? "opacity-50 ring-2 ring-blue-300" : ""}`}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold transition-all cursor-pointer select-none shrink-0 active:scale-95 ${activeTab === tab.id ? "bg-slate-800 text-white shadow-md" : "bg-white/80 text-slate-600 hover:bg-white border border-slate-200/50"} ${isDragging ? "opacity-50 ring-2 ring-blue-300" : ""}`}
                   >
-                    <Icon size={15} className="shrink-0" />
-                    <span className="whitespace-nowrap">{tab.label}</span>
+                    <Icon size={14} className="shrink-0" />
+                    <span className="whitespace-nowrap tracking-tight">{tab.label}</span>
                   </button>
                 );
               })}
