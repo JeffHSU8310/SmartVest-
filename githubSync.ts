@@ -150,11 +150,33 @@ export const restoreFromGitHubGist = async (rawToken: string, rawGistId: string)
 
     const resData = await response.json();
     const file = resData.files?.[GIST_FILENAME];
-    if (!file || !file.content) {
+    if (!file) {
       return { success: false, error: 'Gist 中找不到 SmartVest 備份檔案' };
     }
 
-    const backupPayload = JSON.parse(file.content);
+    let rawJsonContent = file.content;
+
+    // 關鍵修復：若 Gist 內容被 GitHub API 截斷 (truncated) 或需完整數據，從 raw_url 取得完整無截斷全量內容
+    if (file.truncated || !rawJsonContent || file.raw_url) {
+      try {
+        const rawRes = await fetch(file.raw_url, {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+          }
+        });
+        if (rawRes.ok) {
+          rawJsonContent = await rawRes.text();
+        }
+      } catch (rawErr) {
+        console.warn('Failed to fetch from raw_url, fallback to file.content', rawErr);
+      }
+    }
+
+    if (!rawJsonContent) {
+      return { success: false, error: 'Gist 備份內容為空' };
+    }
+
+    const backupPayload = JSON.parse(rawJsonContent);
     const ok = importAllAppData(backupPayload);
     if (ok) {
       const currentConfig = getGitHubSyncConfig();
