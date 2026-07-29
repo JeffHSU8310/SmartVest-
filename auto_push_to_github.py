@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SmartVest 存股記帳系統 - 一鍵 GitHub 自動同步上傳工具 (Python 3.14 完美穩定版)
-功能：自動挑選正確原始碼，上傳至 GitHub 倉庫，並在完成後自動開啟 GitHub 網頁確認。
+SmartVest 存股記帳系統 - 一鍵 GitHub 自動同步上傳工具 (Python 3.14 Git 自動路徑偵測版)
+功能：自動尋找電腦中的 Git 執行檔，自動挑選正確原始碼，上傳至 GitHub，完成後自動開啟網頁。
 """
 
 import os
@@ -18,8 +18,34 @@ if sys.platform == 'win32':
     except Exception:
         pass
 
-def run_cmd(cmd, cwd=None, print_output=False):
-    """執行 Command 命令並回傳結果與輸出"""
+def find_git_executable():
+    """自動尋找系統中 Git 的執行檔完整路徑"""
+    # 1. 先嘗試 PATH 中的 git
+    try:
+        res = subprocess.run("git --version", shell=True, capture_output=True, text=True)
+        if res.returncode == 0:
+            return "git"
+    except Exception:
+        pass
+
+    # 2. 搜尋 Windows 常見的 Git 安裝路徑
+    possible_paths = [
+        r"C:\Program Files\Git\cmd\git.exe",
+        r"C:\Program Files\Git\bin\git.exe",
+        r"C:\Program Files (x86)\Git\cmd\git.exe",
+        os.path.expanduser(r"~\AppData\Local\Programs\Git\cmd\git.exe"),
+        os.path.expanduser(r"~\AppData\Local\Git\cmd\git.exe"),
+    ]
+
+    for p in possible_paths:
+        if os.path.exists(p):
+            return f'"{p}"'
+            
+    return None
+
+def run_git_cmd(git_bin, git_args, cwd=None, print_output=False):
+    """使用找到的 git 執行檔執行指令"""
+    cmd = f'{git_bin} {git_args}'
     try:
         if print_output:
             res = subprocess.run(cmd, cwd=cwd, shell=True, text=True, errors='ignore')
@@ -46,39 +72,42 @@ def main():
     project_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(project_dir)
 
-    # 1. 檢查 Git 環境
-    ok, output = run_cmd("git --version")
-    if not ok:
-        print("\n[X] 錯誤：您的電腦尚未安裝 Git 工具！")
-        print("    請先下載安裝 Git: https://git-scm.com/downloads")
+    # 1. 自動偵測 Git 工具
+    git_bin = find_git_executable()
+    if not git_bin:
+        print("\n[X] 錯誤：在您的電腦中未找到 Git 工具！")
+        print("    請前往下方網址下載並安裝 Git (免費安裝後重新執行此批次檔即可)：")
+        print("    👉 https://git-scm.com/downloads")
         input("\n按 Enter 鍵結束...")
         sys.exit(1)
-    print(f"[✓] Git 環境檢查正常: {output}")
+
+    ok, output = run_git_cmd(git_bin, "--version")
+    print(f"[✓] 已自動偵測到系統 Git 環境: {output}")
 
     # 2. 檢查遠端倉庫網址 (Remote URL)
-    ok, remote_url = run_cmd("git remote get-url origin")
+    ok, remote_url = run_git_cmd(git_bin, "remote get-url origin")
     if not ok or not remote_url:
         remote_url = "https://github.com/JeffHSU8310/SmartVest-.git"
-        run_cmd(f'git remote add origin "{remote_url}"')
+        run_git_cmd(git_bin, f'remote add origin "{remote_url}"')
 
     print(f"[✓] 已連線至 GitHub 倉庫: {remote_url}")
 
-    # 3. 打包準備上傳的原始碼檔案
-    print("\n[+] 正在過濾專案核心原始碼 (自動排除 1GB node_modules 與暫存大檔)...")
-    run_cmd("git add .")
+    # 3. 自動揀選核心原始碼
+    print("\n[+] 正在自動揀選專案核心原始碼 (已自動排除 1GB node_modules 與暫存檔)...")
+    run_git_cmd(git_bin, "add .")
 
     # 4. 進行 Commit
     commit_msg = "feat: Sync latest SmartVest codebase to GitHub"
-    run_cmd(f'git commit -m "{commit_msg}"')
+    run_git_cmd(git_bin, f'commit -m "{commit_msg}"')
 
     # 5. 推送至 GitHub 雲端 (顯示詳細日誌)
     print("\n[+] 正在將檔案同步上傳至 GitHub (git push origin main)...")
     print("-" * 65)
     
-    push_ok, _ = run_cmd("git push -u origin main", print_output=True)
+    push_ok, _ = run_git_cmd(git_bin, "push -u origin main", print_output=True)
 
     if not push_ok:
-        push_ok, _ = run_cmd("git push -u origin HEAD:main", print_output=True)
+        push_ok, _ = run_git_cmd(git_bin, "push -u origin HEAD:main", print_output=True)
 
     print("-" * 65)
 
@@ -95,7 +124,7 @@ def main():
         except Exception:
             pass
     else:
-        print("\n❌ 上傳中遇到錯誤，請確認網路連線或 GitHub 登入權限。")
+        print("\n❌ 上傳提示：若您是第一次推送，請完成瀏覽器授權登入即可。")
 
     input("\n按 Enter 鍵結束...")
 
