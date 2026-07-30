@@ -29,6 +29,7 @@ import {
   fetchCurrentYahooQuote,
   fetchMADataForSymbol,
   fetchTWSEEtfDirect,
+  getLocalTodayString,
 } from "./utils";
 import StockManager from "./components/StockManager";
 import AccountManager from "./components/AccountManager";
@@ -2082,10 +2083,10 @@ function App() {
                 const res = await window.electronAPI!.fetchFundNAV(stock.name);
                 if (res.data) fundData = res.data;
               } else {
-                const fundRes = await fetch(
-                  `/api/moneydj/fund?name=${encodeURIComponent(stock.name)}`,
-                );
-                if (fundRes.ok) fundData = await fundRes.json();
+                const apiRes = await fetchCurrentYahooQuote(stock.ticker || stock.name);
+                if (apiRes.success && apiRes.regularMarketPrice > 0) {
+                  fundData = { nav: apiRes.regularMarketPrice, date: getLocalTodayString() };
+                }
               }
 
               if (fundData && fundData.nav != null) {
@@ -2260,6 +2261,8 @@ function App() {
           "部分股價更新失敗 (Partial Update Error):\n\n" +
             errorMessages.join("\n"),
         );
+      } else {
+        alert("🎉 所有持股即時股價與資產淨值已成功更新！");
       }
     } catch (e: any) {
       alert("更新程序發生嚴重錯誤:\n" + e.message);

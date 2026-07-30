@@ -76,6 +76,21 @@
         });
       }
     </script>
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <script>
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then(function(regs) {
+          for(let r of regs) r.unregister();
+        });
+      }
+      if ('caches' in window) {
+        caches.keys().then(function(names) {
+          for (let n of names) caches.delete(n);
+        });
+      }
+    </script>
     <meta charset="UTF-8" />
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
@@ -117,8 +132,10 @@
 
 
 
-    <script type="module" crossorigin src="./assets/index-uqMgcumQ.js?v=1785379987"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-CzP7ySOV.css?v=1785379987">
+
+
+    <script type="module" crossorigin src="./assets/index-DVLU0do0.js?v=1785380124"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-CzP7ySOV.css?v=1785380124">
   </head>
   <body class="bg-slate-100 antialiased overflow-x-hidden">
     <div id="root"></div>
