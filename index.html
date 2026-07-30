@@ -31,6 +31,21 @@
         });
       }
     </script>
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <script>
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then(function(regs) {
+          for(let r of regs) r.unregister();
+        });
+      }
+      if ('caches' in window) {
+        caches.keys().then(function(names) {
+          for (let n of names) caches.delete(n);
+        });
+      }
+    </script>
     <meta charset="UTF-8" />
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
@@ -66,8 +81,10 @@
     <!-- Vite 編譯後的靜態資源 -->
 
 
-    <script type="module" crossorigin src="./assets/index-Sq-QP92e.js?v=1785376745"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-CzP7ySOV.css?v=1785376745">
+
+
+    <script type="module" crossorigin src="./assets/index-CswNdqxc.js?v=1785376933"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-CzP7ySOV.css?v=1785376933">
   </head>
   <body class="bg-slate-100 antialiased overflow-x-hidden">
     <div id="root"></div>

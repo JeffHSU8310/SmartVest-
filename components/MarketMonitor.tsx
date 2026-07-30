@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
 import TechSettingsModal from './TechSettingsModal';
-import { fetchYahooHistoryUniversal, fetchCurrentYahooQuote, getLocalTodayString, getLocalPastYearString, fetchFearGreedDirect } from '../utils';
+import { fetchYahooHistoryUniversal, fetchCurrentYahooQuote, getLocalTodayString, getLocalPastYearString, fetchFearGreedDirect, corsFetch } from '../utils';
 
 const COLORS = {
   UP: '#ef4444',
@@ -690,7 +690,7 @@ const MarketMonitor: React.FC<Props> = ({ data = [], onUpdateData, techSettings,
               const m = monthsToFetch[i];
               try {
                   const targetUrl = `https://www.twse.com.tw/rwd/zh/TAIEX/MFI94U?date=${m}&response=json`;
-                  const res = await fetch(targetUrl);
+                  const res = await corsFetch(targetUrl);
                   
                   if (!res.ok) continue;
                   
@@ -772,13 +772,13 @@ const MarketMonitor: React.FC<Props> = ({ data = [], onUpdateData, techSettings,
           const txPriceUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanFuturesDaily&data_id=TX&start_date=${startIso}&end_date=${endIso}`;
           
           const [priceRes, instRes, mgnRes, txRes, mtxRes, tmfRes, txPriceRes] = await Promise.all([
-              fetch(priceUrl),
-              fetch(instUrl),
-              fetch(mgnUrl),
-              fetch(txUrl),
-              fetch(mtxUrl),
-              fetch(tmfUrl),
-              fetch(txPriceUrl)
+              corsFetch(priceUrl),
+              corsFetch(instUrl),
+              corsFetch(mgnUrl),
+              corsFetch(txUrl),
+              corsFetch(mtxUrl),
+              corsFetch(tmfUrl),
+              corsFetch(txPriceUrl)
           ]);
           
           if (priceRes.ok) priceData = await priceRes.json();
