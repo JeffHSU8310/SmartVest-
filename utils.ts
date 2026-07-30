@@ -3,6 +3,50 @@ import { Stock, Transaction, TransactionType, PortfolioItem, Market, Account, As
 
 export const generateId = (): string => Math.random().toString(36).substring(2, 9);
 
+export const fetchFullTWMarketPriceMap = async (): Promise<Map<string, { price: number; name?: string }>> => {
+    const priceMap = new Map<string, { price: number; name?: string }>();
+    
+    // 1. 上市公司全市場 API (TWSE OpenAPI)
+    try {
+        const res = await fetch('https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL');
+        if (res.ok) {
+            const data = await res.json();
+            if (Array.isArray(data)) {
+                data.forEach((item: any) => {
+                    const code = item.Code?.trim();
+                    const price = parseFloat(item.ClosingPrice);
+                    if (code && !isNaN(price) && price > 0) {
+                        priceMap.set(code, { price, name: item.Name });
+                    }
+                });
+            }
+        }
+    } catch (e) {
+        console.warn('TWSE OpenAPI fetch failed', e);
+    }
+
+    // 2. 上櫃公司全市場 API (TPEx OpenAPI)
+    try {
+        const res = await fetch('https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes');
+        if (res.ok) {
+            const data = await res.json();
+            if (Array.isArray(data)) {
+                data.forEach((item: any) => {
+                    const code = item.SecuritiesCompanyCode?.trim();
+                    const price = parseFloat(item.Close);
+                    if (code && !isNaN(price) && price > 0) {
+                        priceMap.set(code, { price, name: item.CompanyName });
+                    }
+                });
+            }
+        }
+    } catch (e) {
+        console.warn('TPEx OpenAPI fetch failed', e);
+    }
+
+    return priceMap;
+};
+
 export const getSharesBeforeDate = (stockId: string, targetDate: string, transactions: Transaction[]): number => {
   if (!targetDate) return 0;
   

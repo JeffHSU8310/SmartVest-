@@ -30,6 +30,7 @@ import {
   fetchMADataForSymbol,
   fetchTWSEEtfDirect,
   getLocalTodayString,
+  fetchFullTWMarketPriceMap,
 } from "./utils";
 import StockManager from "./components/StockManager";
 import AccountManager from "./components/AccountManager";
@@ -2062,13 +2063,35 @@ function App() {
         errorMessages.push(`TWSE exception: ${err.message}`);
       }
 
-      // 2. Fetch prices from Yahoo Finance & map NAV
+      let twMarketMap: Map<string, { price: number; name?: string }> | null = null;
+      if (!isDesktopEnv) {
+        try {
+          twMarketMap = await fetchFullTWMarketPriceMap();
+        } catch (e) {}
+      }
+
+      // 2. Fetch prices & map NAV
       const updatedStocks = await Promise.all(
         stocks.map(async (stock) => {
           let updatedStock = { ...stock };
 
-          // 特殊處理：基金標的 (使用 MoneyDJ 搜尋)
-          // 判定條件：市場標記為 FUND，或是類別包含 "基金"，或是名稱包含 "基金" 且沒有設定常規的台美股代號樣式
+          const cleanCode = stock.ticker.split(".")[0].trim().toUpperCase();
+
+          // 優先從全台股對照表 O(1) 拿取價格 (適用於 GitHub Pages 網頁版)
+          if (!isDesktopEnv && twMarketMap && twMarketMap.has(cleanCode)) {
+            const matched = twMarketMap.get(cleanCode)!;
+            if (matched.price > 0) {
+              updatedStock.currentPrice = matched.price;
+              if (matched.name && (!updatedStock.name || updatedStock.name === updatedStock.ticker)) {
+                updatedStock.name = matched.name;
+              }
+              const d = new Date();
+              updatedStock.lastUpdateDate = getLocalTodayString();
+              return updatedStock;
+            }
+          }
+
+          // 特殊處理：基金標的
           const isProbablyFund =
             stock.market === Market.FUND ||
             ((stock.category?.includes("基金") ||
@@ -2092,26 +2115,11 @@ function App() {
               if (fundData && fundData.nav != null) {
                 updatedStock.currentPrice = fundData.nav;
                 updatedStock.nav = fundData.nav;
-                if (fundData.date) {
-                  const year = new Date().getFullYear();
-                  const parsedDate = new Date(`${year}/${fundData.date}`);
-                  if (!isNaN(parsedDate.getTime())) {
-                    // format as yyyy-MM-dd
-                    const m = (parsedDate.getMonth() + 1)
-                      .toString()
-                      .padStart(2, "0");
-                    const d = parsedDate.getDate().toString().padStart(2, "0");
-                    updatedStock.lastUpdateDate = `${year}-${m}-${d}`;
-                  }
-                } else {
-                  const d = new Date();
-                  updatedStock.lastUpdateDate = `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, "0")}-${d.getDate().toString().padStart(2, "0")}`;
-                }
+                updatedStock.lastUpdateDate = getLocalTodayString();
               }
             } catch (error: any) {
               console.error(`Fund fetch failed for ${stock.name}`, error);
             }
-            // 如果抓到，繼續
             if (updatedStock.currentPrice && updatedStock.currentPrice > 0) {
               return updatedStock;
             }
@@ -2141,7 +2149,7 @@ function App() {
               }
             } else {
               const apiRes = await fetchCurrentYahooQuote(finalSymbol);
-              if (apiRes.success) {
+              if (apiRes.success && apiRes.regularMarketPrice > 0) {
                 updatedStock.currentPrice = apiRes.regularMarketPrice;
                 if (apiRes.postMarketPrice != null) {
                   updatedStock.postMarketPrice = apiRes.postMarketPrice;
@@ -2153,11 +2161,10 @@ function App() {
                   updatedStock.marketState = apiRes.marketState;
                 }
               } else if (stock.market === Market.TW) {
-                // Try OTC fallback
                 const otcApiRes = await fetchCurrentYahooQuote(
                   stock.ticker + ".TWO",
                 );
-                if (otcApiRes.success) {
+                if (otcApiRes.success && otcApiRes.regularMarketPrice > 0) {
                   updatedStock.currentPrice = otcApiRes.regularMarketPrice;
                   finalSymbol = stock.ticker + ".TWO";
                 }
