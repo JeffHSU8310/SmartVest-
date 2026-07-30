@@ -6,42 +6,34 @@ export const generateId = (): string => Math.random().toString(36).substring(2, 
 export const fetchFullTWMarketPriceMap = async (): Promise<Map<string, { price: number; name?: string }>> => {
     const priceMap = new Map<string, { price: number; name?: string }>();
     
-    // 1. 上市公司全市場 API (TWSE OpenAPI)
-    try {
-        const res = await fetch('https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL');
-        if (res.ok) {
-            const data = await res.json();
-            if (Array.isArray(data)) {
-                data.forEach((item: any) => {
-                    const code = item.Code?.trim();
-                    const price = parseFloat(item.ClosingPrice);
-                    if (code && !isNaN(price) && price > 0) {
-                        priceMap.set(code, { price, name: item.Name });
-                    }
-                });
+    // TWSE / TPEx OpenAPI 不回傳 Access-Control-Allow-Origin，
+    // 瀏覽器直連一定被 CORS 擋下，必須走 safeFetchJson（內含代理與逾時保護）。
+    // 這裡是「加速用的最佳努力」——失敗時 App 會自動退回逐檔 FinMind 查詢。
+    const [twseData, tpexData] = await Promise.allSettled([
+        safeFetchJson('https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL'),
+        safeFetchJson('https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes')
+    ]);
+
+    // 1. 上市公司全市場 (TWSE OpenAPI)
+    if (twseData.status === 'fulfilled' && Array.isArray(twseData.value)) {
+        twseData.value.forEach((item: any) => {
+            const code = item.Code?.trim();
+            const price = parseFloat(item.ClosingPrice);
+            if (code && !isNaN(price) && price > 0) {
+                priceMap.set(code, { price, name: item.Name });
             }
-        }
-    } catch (e) {
-        console.warn('TWSE OpenAPI fetch failed', e);
+        });
     }
 
-    // 2. 上櫃公司全市場 API (TPEx OpenAPI)
-    try {
-        const res = await fetch('https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes');
-        if (res.ok) {
-            const data = await res.json();
-            if (Array.isArray(data)) {
-                data.forEach((item: any) => {
-                    const code = item.SecuritiesCompanyCode?.trim();
-                    const price = parseFloat(item.Close);
-                    if (code && !isNaN(price) && price > 0) {
-                        priceMap.set(code, { price, name: item.CompanyName });
-                    }
-                });
+    // 2. 上櫃公司全市場 (TPEx OpenAPI)
+    if (tpexData.status === 'fulfilled' && Array.isArray(tpexData.value)) {
+        tpexData.value.forEach((item: any) => {
+            const code = item.SecuritiesCompanyCode?.trim();
+            const price = parseFloat(item.Close);
+            if (code && !isNaN(price) && price > 0) {
+                priceMap.set(code, { price, name: item.CompanyName });
             }
-        }
-    } catch (e) {
-        console.warn('TPEx OpenAPI fetch failed', e);
+        });
     }
 
     return priceMap;
@@ -683,31 +675,71 @@ export const exportToCSV = (
   document.body.removeChild(link);
 };
 
+// 具備逾時保護的 fetch：公用 CORS 代理經常卡死 10 秒以上，
+// 沒有 timeout 會讓整個更新流程停擺，因此一律加上 AbortController。
+const fetchWithTimeout = async (url: string, init?: RequestInit, timeoutMs: number = 8000): Promise<Response> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        return await fetch(url, { ...init, signal: controller.signal });
+    } finally {
+        clearTimeout(timer);
+    }
+};
+
+// 已知本身就回傳 Access-Control-Allow-Origin 的來源，直連即可，
+// 千萬不要包代理 —— 代理反而會把穩定的來源變得不穩定。
+const CORS_ENABLED_HOSTS = ['api.finmindtrade.com'];
+
+export const isCorsEnabledUrl = (url: string): boolean =>
+    CORS_ENABLED_HOSTS.some(h => url.includes(h));
+
+const PROXY_BUILDERS: Array<(url: string) => string> = [
+    (url: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+    (url: string) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
+    (url: string) => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+    (url: string) => `https://api.cors.lol/?url=${encodeURIComponent(url)}`,
+    (url: string) => `https://whateverorigin.org/get?url=${encodeURIComponent(url)}`
+];
+
+// 回應必須是合法 JSON 物件或「陣列」。舊版只接受 '{' 開頭，
+// 導致 TWSE / TPEx OpenAPI 這類回傳陣列的來源一律被判定為失敗。
+const parseJsonPayload = (text: string): any => {
+    if (!text) return null;
+    const trimmed = text.trim();
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null;
+    try {
+        return JSON.parse(trimmed);
+    } catch (e) {
+        return null;
+    }
+};
+
 export const safeFetchJson = async (targetUrl: string, init?: RequestInit): Promise<any> => {
     try {
-        const res = await fetch(targetUrl, init);
+        const res = await fetchWithTimeout(targetUrl, init);
         if (res.ok) {
-            const text = await res.text();
-            if (text && text.trim().startsWith('{')) {
-                return JSON.parse(text);
-            }
+            const parsed = parseJsonPayload(await res.text());
+            if (parsed !== null) return parsed;
         }
     } catch (e) {}
 
-    const proxies = [
-        (url: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-        (url: string) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`
-    ];
+    // 本身開放 CORS 的來源直連失敗就是真的失敗，不必再繞代理浪費時間。
+    if (isCorsEnabledUrl(targetUrl)) return null;
 
-    for (const proxyFn of proxies) {
+    for (const proxyFn of PROXY_BUILDERS) {
         try {
-            const pUrl = proxyFn(targetUrl);
-            const res = await fetch(pUrl, init);
-            if (res.ok) {
-                const text = await res.text();
-                if (text && text.trim().startsWith('{')) {
-                    return JSON.parse(text);
+            const res = await fetchWithTimeout(proxyFn(targetUrl), init);
+            if (!res.ok) continue;
+            const text = await res.text();
+            const parsed = parseJsonPayload(text);
+            if (parsed !== null) {
+                // whateverorigin 會把內容包在 { contents: "..." } 裡
+                if (parsed.contents && typeof parsed.contents === 'string') {
+                    const inner = parseJsonPayload(parsed.contents);
+                    if (inner !== null) return inner;
                 }
+                return parsed;
             }
         } catch (e) {}
     }
@@ -745,19 +777,20 @@ export const fetchTWStockOfficialPrice = async (ticker: string): Promise<{ price
 
 export const corsFetch = async (targetUrl: string, init?: RequestInit): Promise<Response> => {
     try {
-        const directRes = await fetch(targetUrl, init);
+        const directRes = await fetchWithTimeout(targetUrl, init, 12000);
         if (directRes.ok) return directRes;
-    } catch (e) {}
+        // 開放 CORS 的來源直連拿到非 2xx 就是來源本身的答案，
+        // 繞代理只會多花數十秒後得到同樣結果。
+        if (isCorsEnabledUrl(targetUrl)) return directRes;
+    } catch (e) {
+        if (isCorsEnabledUrl(targetUrl)) {
+            throw new Error(`無法連線至目標 URL: ${targetUrl}`);
+        }
+    }
 
-    const proxies = [
-        (url: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-        (url: string) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`
-    ];
-
-    for (const proxyFn of proxies) {
+    for (const proxyFn of PROXY_BUILDERS) {
         try {
-            const pUrl = proxyFn(targetUrl);
-            const proxyRes = await fetch(pUrl, init);
+            const proxyRes = await fetchWithTimeout(proxyFn(targetUrl), init);
             if (proxyRes.ok) return proxyRes;
         } catch (e) {}
     }

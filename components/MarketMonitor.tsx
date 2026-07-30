@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
 import TechSettingsModal from './TechSettingsModal';
-import { fetchYahooHistoryUniversal, fetchCurrentYahooQuote, getLocalTodayString, getLocalPastYearString, fetchFearGreedDirect, corsFetch } from '../utils';
+import { fetchYahooHistoryUniversal, fetchCurrentYahooQuote, getLocalTodayString, getLocalPastYearString, fetchFearGreedDirect, corsFetch, safeFetchJson } from '../utils';
 
 const COLORS = {
   UP: '#ef4444',
@@ -771,23 +771,29 @@ const MarketMonitor: React.FC<Props> = ({ data = [], onUpdateData, techSettings,
           const tmfUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanFuturesInstitutionalInvestors&data_id=TMF&start_date=${startIso}&end_date=${endIso}`;
           const txPriceUrl = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanFuturesDaily&data_id=TX&start_date=${startIso}&end_date=${endIso}`;
           
-          const [priceRes, instRes, mgnRes, txRes, mtxRes, tmfRes, txPriceRes] = await Promise.all([
-              corsFetch(priceUrl),
-              corsFetch(instUrl),
-              corsFetch(mgnUrl),
-              corsFetch(txUrl),
-              corsFetch(mtxUrl),
-              corsFetch(tmfUrl),
-              corsFetch(txPriceUrl)
+          // FinMind 本身開放 CORS，直接用 safeFetchJson 直連即可。
+          // 必須用 allSettled：舊版 Promise.all 只要任一項失敗（例如某個
+          // 法人資料集當日尚未產出），加權指數與台指期貨就會一起消失。
+          const results = await Promise.allSettled([
+              safeFetchJson(priceUrl),
+              safeFetchJson(instUrl),
+              safeFetchJson(mgnUrl),
+              safeFetchJson(txUrl),
+              safeFetchJson(mtxUrl),
+              safeFetchJson(tmfUrl),
+              safeFetchJson(txPriceUrl)
           ]);
-          
-          if (priceRes.ok) priceData = await priceRes.json();
-          if (instRes.ok) instData = await instRes.json();
-          if (mgnRes.ok) marginData = await mgnRes.json();
-          if (txRes.ok) txData = await txRes.json();
-          if (mtxRes.ok) mtxData = await mtxRes.json();
-          if (tmfRes.ok) tmfData = await tmfRes.json();
-          if (txPriceRes.ok) txPriceData = await txPriceRes.json();
+
+          const pick = (i: number) =>
+              results[i].status === 'fulfilled' ? (results[i] as PromiseFulfilledResult<any>).value : null;
+
+          priceData = pick(0);
+          instData = pick(1);
+          marginData = pick(2);
+          txData = pick(3);
+          mtxData = pick(4);
+          tmfData = pick(5);
+          txPriceData = pick(6);
       } catch (e) {
           console.warn('Finmind setup error', e);
       }
