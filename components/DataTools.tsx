@@ -59,6 +59,11 @@ interface Props {
   onOpenFromPC: () => Promise<boolean>;
   currentFileName: string;
 
+  // 完整存檔內容的單一來源（與自動存檔、雲端備份寫入的內容一致）。
+  getExportData?: () => Record<string, any>;
+  // 上傳／匯出前先把記憶體中的最新資料寫入 localStorage。
+  onFlushSave?: () => Promise<void>;
+
   // New Security Props
   currentAppPassword?: string;
   onUpdateAppPassword?: (newPass: string) => void;
@@ -71,6 +76,7 @@ const DataTools: React.FC<Props> = ({
   stockOrder, appTitle, generalAssets, autoSyncStartDate, navOrder, marketData, techSettings, recurringCashRules, budgetItems, suggestedCategories,
   onImportJSON, onImportCSV, onClearAllData,
   onSaveToPC, onSaveAsToPC, onOpenFromPC, currentFileName,
+  getExportData, onFlushSave,
   currentAppPassword, onUpdateAppPassword, currentRecoveryKey, onUpdateRecoveryKey
 }) => {
   const jsonInputRef = useRef<HTMLInputElement>(null);
@@ -109,6 +115,14 @@ const DataTools: React.FC<Props> = ({
       return;
     }
     setIsGhSyncing(true);
+    // 備份是直接從 localStorage 打包的，必須先把記憶體中的最新資料寫進去，
+    // 否則上傳到雲端的會是這次編輯開始之前的舊快照。
+    setGhStatusMsg('⏳ 正在儲存最新變更...');
+    try {
+      await onFlushSave?.();
+    } catch (e) {
+      console.warn('Flush before upload failed', e);
+    }
     setGhStatusMsg('⏳ 正在同步上傳至 GitHub Gist...');
     const res = await syncToGitHubGist(ghTokenInput, ghGistIdInput);
     setIsGhSyncing(false);
@@ -176,13 +190,16 @@ const DataTools: React.FC<Props> = ({
 
   // Manual JSON Export (Legacy)
   const handleExportJSON = () => {
-    const data = JSON.stringify({ 
-        stocks, transactions, accounts, assetHistory, 
-        cashTransactions, householdTransactions, stockOrder, 
+    // 一律走 getExportData()，與自動存檔／雲端備份使用同一份完整內容，
+    // 避免手動匯出漏掉 exchangeRate、performanceRecords、密碼等欄位。
+    const payload = getExportData ? getExportData() : {
+        stocks, transactions, accounts, assetHistory,
+        cashTransactions, householdTransactions, stockOrder,
         appTitle, generalAssets, autoSyncStartDate, navOrder,
         marketData, techSettings, recurringCashRules, budgetItems,
         customCategories: suggestedCategories
-    }, null, 2);
+    };
+    const data = JSON.stringify(payload, null, 2);
     const blob = new Blob([data], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');

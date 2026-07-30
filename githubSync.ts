@@ -60,6 +60,10 @@ export interface ImportResult {
 // 因此空間不夠時優先捨棄它，保住無法重建的帳務資料。
 const REBUILDABLE_CACHE_KEYS = ['marketData'];
 
+// smartvest_backup_00.json ~ smartvest_backup_NN.json
+const isChunkFileName = (name: string): boolean =>
+  /^smartvest_backup_\d+\.json$/.test(name);
+
 const isQuotaError = (e: any): boolean =>
   !!e && (
     e.name === 'QuotaExceededError' ||
@@ -211,12 +215,12 @@ export const syncToGitHubGist = async (rawToken: string, rawGistId?: string): Pr
     if (numChunks <= 1) {
       const filesPayload: any = { [GIST_FILENAME]: { content: content } };
       if (currentMethod === 'PATCH') {
-        for (let i = 0; i < 10; i++) {
-          const chunkName = `smartvest_backup_${i.toString().padStart(2, '0')}.json`;
-          if (existingFiles[chunkName]) {
-            filesPayload[chunkName] = null;
-          }
-        }
+        // 舊版只清 00~09，一旦某次備份超過 10 個分割檔，殘留的 chunk 會在
+        // 還原時被優先讀取（chunkKeys 優先於單一檔案），把使用者帶回舊資料。
+        // 這裡改成把 Gist 上所有既有的 chunk 全部刪掉。
+        Object.keys(existingFiles).forEach(k => {
+          if (isChunkFileName(k)) filesPayload[k] = null;
+        });
       }
       
       let res = await sendGistReq(currentUrl, currentMethod, filesPayload);
@@ -262,9 +266,8 @@ export const syncToGitHubGist = async (rawToken: string, rawGistId?: string): Pr
         const cleanupPayload: any = {};
         let hasCleanup = false;
         Object.keys(existingFiles).forEach(k => {
-          if (k.startsWith('smartvest_backup_') && k.endsWith('.json')) {
-            const idxStr = k.replace('smartvest_backup_', '').replace('.json', '');
-            const idx = parseInt(idxStr, 10);
+          if (isChunkFileName(k)) {
+            const idx = parseInt(k.replace('smartvest_backup_', '').replace('.json', ''), 10);
             if (!isNaN(idx) && idx >= numChunks) {
               cleanupPayload[k] = null;
               hasCleanup = true;
@@ -317,40 +320,57 @@ export const restoreFromGitHubGist = async (rawToken: string, rawGistId: string)
     }
 
     const resData = await response.json();
-    // 尋找分割的 chunk 檔案 (smartvest_backup_00.json, etc.)
-    const chunkKeys = Object.keys(resData.files || {}).filter(k => k.startsWith('smartvest_backup_') && k.endsWith('.json')).sort();
-    
-    let rawJsonContent = '';
-    let rawFetchSuccess = false;
 
-    if (chunkKeys.length > 0) {
-      // 組合所有 chunks
-      for (const k of chunkKeys) {
-        const chunkFile = resData.files[k];
+    // 尋找分割的 chunk 檔案 (smartvest_backup_00.json, etc.)，依編號排序
+    const chunkEntries = Object.keys(resData.files || {})
+      .filter(isChunkFileName)
+      .map(name => ({
+        name,
+        idx: parseInt(name.replace('smartvest_backup_', '').replace('.json', ''), 10),
+      }))
+      .sort((a, b) => a.idx - b.idx);
+
+    // 合法的分割備份一定是 00、01、…、N-1 連續編號。只要缺了開頭或中間斷號，
+    // 就代表這是舊版清理不乾淨留下的碎片（舊版只刪 00~09），
+    // 此時 Gist 上的單一檔案才是真正的最新備份，必須優先採用。
+    const hasContiguousChunks =
+      chunkEntries.length > 0 && chunkEntries.every((e, i) => e.idx === i);
+    const hasSingleFile = !!resData.files?.[GIST_FILENAME];
+
+    const tryParse = (text?: string): any => {
+      if (!text) return null;
+      try { return JSON.parse(text); } catch { return null; }
+    };
+
+    // 組合分割檔內容
+    const readChunks = async (): Promise<{ content?: string; error?: string }> => {
+      let combined = '';
+      for (const { name } of chunkEntries) {
+        const chunkFile = resData.files[name];
         if (chunkFile.truncated && chunkFile.raw_url) {
           try {
             const rawRes = await fetch(chunkFile.raw_url, { cache: 'no-cache' });
-            if (rawRes.ok) {
-              const rawText = await rawRes.text();
-              rawJsonContent += rawText;
-            } else {
-              throw new Error(`HTTP ${rawRes.status}`);
-            }
+            if (!rawRes.ok) throw new Error(`HTTP ${rawRes.status}`);
+            combined += await rawRes.text();
           } catch (err) {
-            return { success: false, error: `下載分割檔 ${k} 失敗，請重試。` };
+            return { error: `下載分割檔 ${name} 失敗，請重試。` };
           }
         } else {
-          rawJsonContent += (chunkFile.content || '');
+          combined += (chunkFile.content || '');
         }
       }
-      rawFetchSuccess = true;
-    } else {
-      // 退回單一檔案模式 (Legacy)
-      const file = resData.files?.[GIST_FILENAME] || (resData.files ? Object.values(resData.files)[0] : null) as any;
+      return { content: combined };
+    };
+
+    // 單一檔案模式 (Legacy)
+    const readSingleFile = async (): Promise<{ content?: string; error?: string }> => {
+      // 注意不能退回「第一個檔案」，否則在殘留 chunk 的 Gist 上會誤抓到分割檔碎片。
+      const file: any = resData.files?.[GIST_FILENAME]
+        || Object.entries(resData.files || {}).find(([k]) => !isChunkFileName(k))?.[1];
       if (!file) {
-        return { success: false, error: 'Gist 中找不到 SmartVest 備份檔案' };
+        return { error: 'Gist 中找不到 SmartVest 備份檔案' };
       }
-      
+
       const urlsToTry: string[] = [];
       if (file.raw_url) urlsToTry.push(file.raw_url);
       if (resData.owner?.login) {
@@ -363,36 +383,56 @@ export const restoreFromGitHubGist = async (rawToken: string, rawGistId: string)
           const rawRes = await fetch(url, { cache: 'no-cache' });
           if (rawRes.ok) {
             const text = await rawRes.text();
-            if (text && text.trim().endsWith('}')) {
-              rawJsonContent = text;
-              rawFetchSuccess = true;
-              break;
-            }
+            if (text && text.trim().endsWith('}')) return { content: text };
           }
         } catch (err) {
           console.warn(`Fetch from ${url} failed`, err);
         }
       }
 
-      if (!rawFetchSuccess) {
-        if (!file.truncated && file.content && file.content.trim().endsWith('}')) {
-          rawJsonContent = file.content;
-          rawFetchSuccess = true;
-        } else {
-          return { success: false, error: '舊版備份資料過大被 GitHub 截斷。請在「電腦端」先點擊「備份上傳」轉換為新版分割格式後，再於手機下載！' };
-        }
+      if (!file.truncated && file.content && file.content.trim().endsWith('}')) {
+        return { content: file.content };
+      }
+      return { error: '舊版備份資料過大被 GitHub 截斷。請在「電腦端」先點擊「備份上傳」轉換為新版分割格式後，再於手機下載！' };
+    };
+
+    // 依可信度排序來源，取第一個能解析成合法 JSON 的
+    const sources: Array<() => Promise<{ content?: string; error?: string }>> = [];
+    if (hasContiguousChunks) {
+      sources.push(readChunks);
+      if (hasSingleFile) sources.push(readSingleFile);
+    } else if (hasSingleFile) {
+      sources.push(readSingleFile);
+      if (chunkEntries.length > 0) sources.push(readChunks);
+    } else if (chunkEntries.length > 0) {
+      sources.push(readChunks);
+    } else {
+      sources.push(readSingleFile);
+    }
+
+    let backupPayload: any = null;
+    let rawJsonContent = '';
+    let readError: string | undefined;
+
+    for (const read of sources) {
+      const res = await read();
+      if (res.error && !readError) readError = res.error;
+      if (!res.content) continue;
+      if (!rawJsonContent) rawJsonContent = res.content;
+      const parsed = tryParse(res.content);
+      if (parsed) {
+        backupPayload = parsed;
+        rawJsonContent = res.content;
+        break;
       }
     }
 
     if (!rawJsonContent) {
-      return { success: false, error: 'Gist 備份內容為空' };
+      return { success: false, error: readError || 'Gist 備份內容為空' };
     }
 
-    let backupPayload: any = null;
-    try {
-      backupPayload = JSON.parse(rawJsonContent);
-    } catch (parseErr: any) {
-      return { success: false, error: `雲端資料格式不完整 (${parseErr.message})，請於電腦端再次按下「備份上傳至 GitHub」更新存檔。` };
+    if (!backupPayload) {
+      return { success: false, error: '雲端資料格式不完整，請於電腦端再次按下「備份上傳至 GitHub」更新存檔。' };
     }
 
     const imported = importAllAppData(backupPayload);

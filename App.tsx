@@ -73,6 +73,11 @@ import { Filesystem, Directory, Encoding } from "@capacitor/filesystem";
 import { Capacitor } from "@capacitor/core";
 
 const STORAGE_KEY = "smartvest_data_v2";
+// 停止操作後多久落地（debounce），以及連續操作時最長容忍多久一定要落地。
+// 兩者都必須存在：只有 debounce 的話，使用者持續操作會讓計時器被無限重設，
+// localStorage 永遠停在編輯開始前的舊快照，雲端備份也就跟著上傳舊資料。
+const SAVE_DEBOUNCE_MS = 10000;
+const SAVE_MAX_WAIT_MS = 10000;
 const MOBILE_FILE_NAME = "smartvest_data.json";
 const APP_PASSWORD_KEY = "smartvest_app_password";
 const RECOVERY_KEY_KEY = "smartvest_recovery_key";
@@ -1095,6 +1100,52 @@ function App() {
     ],
   );
 
+  // 讓 persistData 永遠讀得到最新的匯出內容，又不必把自己重建一次。
+  const getExportDataRef = useRef(getExportData);
+  useEffect(() => {
+    getExportDataRef.current = getExportData;
+  }, [getExportData]);
+
+  // 實際把目前記憶體中的資料寫入 localStorage／本機檔案。
+  const persistData = useCallback(async () => {
+    const data = getExportDataRef.current();
+    const dataStr = JSON.stringify(data);
+
+    // 寫入瀏覽器快取 (Local Web Cache)
+    localStorage.setItem(STORAGE_KEY, dataStr);
+
+    if (isDesktopMode || isMobileMode) {
+      setSaveStatus("saving");
+      try {
+        if (isDesktopMode) {
+          const res = await window.electronAPI?.saveData(data);
+          if (res?.success) setSaveStatus("saved");
+          else setSaveStatus("error");
+        } else if (isMobileMode) {
+          await Filesystem.writeFile({
+            path: MOBILE_FILE_NAME,
+            data: dataStr,
+            directory: Directory.Documents,
+            encoding: Encoding.UTF8,
+          });
+          setSaveStatus("saved");
+        }
+      } catch (e) {
+        setSaveStatus("error");
+      }
+    }
+    setHasUnsavedChanges(false);
+  }, [isDesktopMode, isMobileMode]);
+
+  // 這一批未儲存的變更最晚必須在什麼時候落地。
+  const saveDeadlineRef = useRef<number | null>(null);
+
+  // 雲端備份／手動匯出前呼叫：立刻落地，確保打包到的是最新資料而非舊快照。
+  const flushSave = useCallback(async () => {
+    saveDeadlineRef.current = null;
+    await persistData();
+  }, [persistData]);
+
   useEffect(() => {
     if (!isInitialized) return;
 
@@ -1102,36 +1153,21 @@ function App() {
     setHasUnsavedChanges(true);
     if (isDesktopMode || isMobileMode) setSaveStatus("idle");
 
-    // 改為 10 秒後才執行儲存動作，避免頻繁寫入過大資料造成延遲
-    const timer = setTimeout(async () => {
-      const data = getExportData();
-      const dataStr = JSON.stringify(data);
+    // 停止操作 SAVE_DEBOUNCE_MS 後才寫入，避免頻繁寫入過大資料造成延遲；
+    // 但同時保證從第一筆未儲存的變更起，最多 SAVE_MAX_WAIT_MS 就一定會寫入。
+    const now = Date.now();
+    if (saveDeadlineRef.current === null) {
+      saveDeadlineRef.current = now + SAVE_MAX_WAIT_MS;
+    }
+    const delay = Math.max(
+      0,
+      Math.min(SAVE_DEBOUNCE_MS, saveDeadlineRef.current - now),
+    );
 
-      // 寫入瀏覽器快取 (Local Web Cache)
-      localStorage.setItem(STORAGE_KEY, dataStr);
-
-      if (isDesktopMode || isMobileMode) {
-        setSaveStatus("saving");
-        try {
-          if (isDesktopMode) {
-            const res = await window.electronAPI?.saveData(data);
-            if (res?.success) setSaveStatus("saved");
-            else setSaveStatus("error");
-          } else if (isMobileMode) {
-            await Filesystem.writeFile({
-              path: MOBILE_FILE_NAME,
-              data: dataStr,
-              directory: Directory.Documents,
-              encoding: Encoding.UTF8,
-            });
-            setSaveStatus("saved");
-          }
-        } catch (e) {
-          setSaveStatus("error");
-        }
-      }
-      setHasUnsavedChanges(false);
-    }, 10000);
+    const timer = setTimeout(() => {
+      saveDeadlineRef.current = null;
+      void persistData();
+    }, delay);
 
     return () => clearTimeout(timer);
   }, [
@@ -1155,7 +1191,7 @@ function App() {
     isInitialized,
     isDesktopMode,
     isMobileMode,
-    getExportData,
+    persistData,
   ]);
 
   // ... (loadData, handleUpdateStock, etc. remain the same) ...
@@ -2654,6 +2690,8 @@ function App() {
               onSaveToPC={handleSaveToPC}
               onSaveAsToPC={handleSaveAsToPC}
               onOpenFromPC={handleOpenFromPC}
+              getExportData={getExportData}
+              onFlushSave={flushSave}
               currentFileName={fileName}
               currentAppPassword={appPassword}
               onUpdateAppPassword={(p) => {
