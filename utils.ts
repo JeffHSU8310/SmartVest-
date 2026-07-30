@@ -925,6 +925,65 @@ export const fetchCurrentYahooQuote = async (symbol: string): Promise<any> => {
     return { success: false, error: 'No data' };
 };
 
+export const fetchFinMindHistoryAdapter = async (symbol: string, period1: number, period2: number, interval: string = '1d'): Promise<any> => {
+    try {
+        const cleanSymbol = symbol.trim().split('.')[0].toUpperCase();
+        const isTW = symbol.endsWith('.TW') || symbol.endsWith('.TWO') || /^\d{4,6}[A-Za-z]?$/.test(cleanSymbol);
+        const dataset = isTW ? 'TaiwanStockPrice' : 'USStockPrice';
+
+        const startDate = new Date(period1 * 1000).toISOString().split('T')[0];
+        const endDate = new Date(period2 * 1000).toISOString().split('T')[0];
+
+        const url = `https://api.finmindtrade.com/api/v4/data?dataset=${dataset}&data_id=${encodeURIComponent(cleanSymbol)}&start_date=${startDate}&end_date=${endDate}`;
+        const res = await fetch(url);
+        if (res.ok) {
+            const json = await res.json();
+            if (json.data && json.data.length > 0) {
+                const timestamp: number[] = [];
+                const open: number[] = [];
+                const high: number[] = [];
+                const low: number[] = [];
+                const close: number[] = [];
+                const volume: number[] = [];
+                const adjclose: number[] = [];
+
+                json.data.forEach((row: any) => {
+                    const ts = Math.floor(new Date(row.date).getTime() / 1000);
+                    const o = row.open ?? row.Open ?? 0;
+                    const h = row.max ?? row.High ?? 0;
+                    const l = row.min ?? row.Low ?? 0;
+                    const c = row.close ?? row.Close ?? 0;
+                    const v = row.Trading_Volume ?? row.Volume ?? 0;
+                    const ac = row.Adj_Close ?? c;
+
+                    if (!isNaN(ts) && c > 0) {
+                        timestamp.push(ts);
+                        open.push(o || c);
+                        high.push(h || c);
+                        low.push(l || c);
+                        close.push(c);
+                        volume.push(v);
+                        adjclose.push(ac);
+                    }
+                });
+
+                if (timestamp.length > 0) {
+                    return {
+                        timestamp,
+                        indicators: {
+                            quote: [{ open, high, low, close, volume }],
+                            adjclose: [{ adjclose }]
+                        }
+                    };
+                }
+            }
+        }
+    } catch (e) {
+        console.warn('fetchFinMindHistoryAdapter failed for ' + symbol, e);
+    }
+    return null;
+};
+
 export const fetchYahooHistoryUniversal = async (symbol: string, period1: number, period2: number, interval: string = '1d') => {
     if (typeof window !== 'undefined' && (window as any).electronAPI && (window as any).electronAPI.fetchYahooHistory) {
         const res = await (window as any).electronAPI.fetchYahooHistory({ symbol, period1, period2, interval });
@@ -949,17 +1008,27 @@ export const fetchYahooHistoryUniversal = async (symbol: string, period1: number
         }
         throw new Error("Yahoo Finance returned invalid payload");
     } catch (err: any) {
+        // Fallback 1: Try OTC symbol if .TW
         if (cleanSymbol.endsWith('.TW')) {
             const fallbackSymbol = cleanSymbol.replace('.TW', '.TWO');
             const fbUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(fallbackSymbol)}?period1=${period1}&period2=${period2}&interval=${interval}`;
-            const fbRes = await corsFetch(fbUrl);
-            if (fbRes.ok) {
-                const fbJson = await fbRes.json();
-                if (fbJson?.chart?.result?.[0]) {
-                    return fbJson.chart.result[0];
+            try {
+                const fbRes = await corsFetch(fbUrl);
+                if (fbRes.ok) {
+                    const fbJson = await fbRes.json();
+                    if (fbJson?.chart?.result?.[0]) {
+                        return fbJson.chart.result[0];
+                    }
                 }
-            }
+            } catch (e) {}
         }
+
+        // Fallback 2: Try FinMind Open API History Adapter (100% CORS-safe)
+        const fmHistory = await fetchFinMindHistoryAdapter(cleanSymbol, period1, period2, interval);
+        if (fmHistory) {
+            return fmHistory;
+        }
+
         throw err;
     }
 };
