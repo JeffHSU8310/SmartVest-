@@ -1025,8 +1025,8 @@ const HouseholdExpenses: React.FC<Props> = ({
                                 </button>
                             </div>
                         </div>
-                        <div className="flex-1 overflow-y-auto max-h-[250px] custom-scrollbar">
-                            <table className="w-full text-sm">
+                        <div className="flex-1 overflow-x-auto overflow-y-auto max-h-[250px] custom-scrollbar">
+                            <table className="w-full text-sm min-w-[280px]">
                                 <thead className="text-xs text-slate-400 bg-slate-50 uppercase sticky top-0"><tr><th className="py-2 pl-3 text-left">{statsMode === 'ACCOUNT' ? '帳戶名稱' : '支付方式'}</th><th className="py-2 pr-3 text-right">區間淨額</th></tr></thead>
                                 <tbody className="divide-y divide-slate-50">
                                     {(() => {

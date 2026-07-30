@@ -1,50 +1,41 @@
 <!DOCTYPE html>
 <html lang="zh-TW">
   <head>
-    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
-    <meta http-equiv="Pragma" content="no-cache" />
-    <meta http-equiv="Expires" content="0" />
-    <script>
-      if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.getRegistrations().then(function(regs) {
-          for(let r of regs) r.unregister();
-        });
-      }
-      if ('caches' in window) {
-        caches.keys().then(function(names) {
-          for (let n of names) caches.delete(n);
-        });
-      }
-    </script>
-    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
-    <meta http-equiv="Pragma" content="no-cache" />
-    <meta http-equiv="Expires" content="0" />
-    <script>
-      if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.getRegistrations().then(function(regs) {
-          for(let r of regs) r.unregister();
-        });
-      }
-      if ('caches' in window) {
-        caches.keys().then(function(names) {
-          for (let n of names) caches.delete(n);
-        });
-      }
-    </script>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <title>SmartVest 存股記帳</title>
+
+    <!-- 防快取：清除 Service Worker 與 Cache API -->
+    <script>
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then(function(regs) {
+          for(let r of regs) r.unregister();
+        });
+      }
+      if ('caches' in window) {
+        caches.keys().then(function(names) {
+          for (let n of names) caches.delete(n);
+        });
+      }
+    </script>
+
+    <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts -->
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
     <style>
+      /* 手機端隱藏捲動條但保留滑動功能 */
       .no-scrollbar::-webkit-scrollbar { display: none; }
       .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
     </style>
 
-
-    <script type="module" crossorigin src="./assets/index-D19iVeSg.js?v=1785341288"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-CzP7ySOV.css?v=1785341288">
+    <!-- Vite 編譯後的靜態資源 -->
+    <script type="module" crossorigin src="./assets/index-CDDNl3bq.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-CzP7ySOV.css">
   </head>
   <body class="bg-slate-100 antialiased overflow-x-hidden">
     <div id="root"></div>
