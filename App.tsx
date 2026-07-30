@@ -32,6 +32,7 @@ import {
   getLocalTodayString,
   fetchFullTWMarketPriceMap,
   fetchTWRealtimeBatch,
+  fetchFundNavByName,
 } from "./utils";
 import type { RealtimeQuote } from "./utils";
 import StockManager from "./components/StockManager";
@@ -2145,9 +2146,17 @@ function App() {
                 const res = await window.electronAPI!.fetchFundNAV(stock.name);
                 if (res.data) fundData = res.data;
               } else {
-                const apiRes = await fetchCurrentYahooQuote(stock.ticker || stock.name);
-                if (apiRes.success && apiRes.regularMarketPrice > 0) {
-                  fundData = { nav: apiRes.regularMarketPrice, date: getLocalTodayString() };
+                // 網頁版先查 MoneyDJ 淨值（以基金名稱搜尋）。
+                // 基金沒有股票代號，先前只丟給 Yahoo 查，對境內基金幾乎必定查無，
+                // 淨值因此一直不動。Yahoo 僅保留給有掛牌代號的境外標的當備援。
+                const fundNav = await fetchFundNavByName(stock.name || stock.ticker);
+                if (fundNav && fundNav.nav > 0) {
+                  fundData = { nav: fundNav.nav, date: fundNav.date };
+                } else {
+                  const apiRes = await fetchCurrentYahooQuote(stock.ticker || stock.name);
+                  if (apiRes.success && apiRes.regularMarketPrice > 0) {
+                    fundData = { nav: apiRes.regularMarketPrice, date: getLocalTodayString() };
+                  }
                 }
               }
 

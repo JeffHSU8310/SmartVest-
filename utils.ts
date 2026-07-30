@@ -1147,6 +1147,52 @@ export const fetchFearGreedDirect = async (): Promise<any> => {
     };
 };
 
+// 以基金「名稱」查 MoneyDJ 取得最新淨值（網頁版用）。
+//
+// 基金沒有像股票那樣的公開即時 API，桌面版是在 Node 端爬 MoneyDJ 並用 iconv
+// 解 Big5；瀏覽器沒有 iconv，但 r.jina.ai 的 markdown 模式會替我們把 Big5
+// 網頁轉成正確的 UTF-8 文字，所以改在前端解析它的輸出。
+// 注意這裡不能加 X-Return-Format: text —— 那會拿到未解碼的原始 HTML（亂碼）。
+export const fetchFundNavByName = async (
+    fundName: string
+): Promise<{ nav: number; date?: string; matchedName?: string } | null> => {
+    const name = String(fundName || '').trim();
+    if (!name) return null;
+
+    const searchUrl = `https://www.moneydj.com/funddj/ya/yFundSearch.djhtm?a=${encodeURIComponent(name)}`;
+
+    try {
+        const res = await fetchWithTimeout(`https://r.jina.ai/${searchUrl}`, undefined, 25000);
+        if (!res.ok) return null;
+        const md = await res.text();
+
+        // 每一列長這樣：
+        // [基金名稱](...yp010000...)[投信](...)[經理人](...)MM/DD 淨值-一日漲跌...
+        const re = /\[([^\]\n]+)\]\(https?:\/\/[^)]*yp010000[^)]*\)[\s\S]{0,400}?(\d{2}\/\d{2})\s+([\d,]+\.\d+)/g;
+        const candidates: { name: string; date: string; nav: number }[] = [];
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(md)) !== null) {
+            const nav = parseFloat(m[3].replace(/,/g, ''));
+            if (nav > 0) candidates.push({ name: m[1].trim(), date: m[2], nav });
+        }
+        if (candidates.length === 0) return null;
+
+        // 同一檔基金常有多種級別（A累積型/G累積型/月配型…）淨值差很多，
+        // 挑錯級別等於給錯數字，因此優先取完全相同的名稱，
+        // 其次取「包含查詢字串且最短」者，最後才退回第一筆。
+        const exact = candidates.find(c => c.name === name);
+        const contains = candidates
+            .filter(c => c.name.includes(name))
+            .sort((a, b) => a.name.length - b.name.length)[0];
+        const best = exact || contains || candidates[0];
+
+        return { nav: best.nav, date: best.date, matchedName: best.name };
+    } catch (e) {
+        console.warn('fetchFundNavByName failed for ' + name, e);
+    }
+    return null;
+};
+
 export const fetchTWSEEtfDirect = async (): Promise<any> => {
     try {
         if (typeof window !== 'undefined' && (window as any).electronAPI && (window as any).electronAPI.fetchTWSE) {
