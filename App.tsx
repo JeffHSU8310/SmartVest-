@@ -31,7 +31,9 @@ import {
   fetchTWSEEtfDirect,
   getLocalTodayString,
   fetchFullTWMarketPriceMap,
+  fetchTWRealtimeBatch,
 } from "./utils";
+import type { RealtimeQuote } from "./utils";
 import StockManager from "./components/StockManager";
 import AccountManager from "./components/AccountManager";
 import TransactionForm from "./components/TransactionForm";
@@ -2063,6 +2065,27 @@ function App() {
         errorMessages.push(`TWSE exception: ${err.message}`);
       }
 
+      // 台股即時報價：一次抓齊所有台股標的。
+      // 必須排在全市場日收盤表之前 —— FinMind / TWSE OpenAPI 的日線要等收盤後
+      // 才有當日資料，盤中拿到的一律是昨天的收盤價，這會讓「更新股價」
+      // 看起來像是把價格改回昨收。mis.twse 才有盤中即時價。
+      let twRealtimeMap: Map<string, RealtimeQuote> | null = null;
+      if (!isDesktopEnv) {
+        try {
+          const twCodes = stocks
+            .filter(
+              (s) =>
+                s.market === Market.TW ||
+                s.market === Market.BOND ||
+                /^[0-9]{4,6}[A-Z]?(\.TW|\.TWO)?$/i.test(s.ticker || ""),
+            )
+            .map((s) => s.ticker);
+          if (twCodes.length > 0) {
+            twRealtimeMap = await fetchTWRealtimeBatch(twCodes);
+          }
+        } catch (e) {}
+      }
+
       let twMarketMap: Map<string, { price: number; name?: string }> | null = null;
       if (!isDesktopEnv) {
         try {
@@ -2077,7 +2100,20 @@ function App() {
 
           const cleanCode = stock.ticker.split(".")[0].trim().toUpperCase();
 
-          // 優先從全台股對照表 O(1) 拿取價格 (適用於 GitHub Pages 網頁版)
+          // 最優先：盤中即時價
+          const live = twRealtimeMap?.get(cleanCode);
+          if (!isDesktopEnv && live && live.price > 0) {
+            updatedStock.currentPrice = live.price;
+            if (live.prevClose > 0) updatedStock.previousClose = live.prevClose;
+            if (live.name && (!updatedStock.name || updatedStock.name === updatedStock.ticker)) {
+              updatedStock.name = live.name;
+            }
+            updatedStock.marketState = live.isLive ? "REGULAR" : "CLOSED";
+            updatedStock.lastUpdateDate = getLocalTodayString();
+            return updatedStock;
+          }
+
+          // 次選：全台股日收盤對照表 O(1) 拿取價格 (適用於 GitHub Pages 網頁版)
           if (!isDesktopEnv && twMarketMap && twMarketMap.has(cleanCode)) {
             const matched = twMarketMap.get(cleanCode)!;
             if (matched.price > 0) {

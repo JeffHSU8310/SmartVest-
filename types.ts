@@ -41,6 +41,7 @@ export interface Stock {
   ema100?: number;
   postMarketPrice?: number;
   preMarketPrice?: number;
+  previousClose?: number; // 昨收，用於計算當日漲跌
   marketState?: string;
   note?: string; 
   hidden?: boolean;

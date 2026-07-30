@@ -694,25 +694,39 @@ const CORS_ENABLED_HOSTS = ['api.finmindtrade.com'];
 export const isCorsEnabledUrl = (url: string): boolean =>
     CORS_ENABLED_HOSTS.some(h => url.includes(h));
 
-const PROXY_BUILDERS: Array<(url: string) => string> = [
-    (url: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-    (url: string) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
-    (url: string) => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
-    (url: string) => `https://api.cors.lol/?url=${encodeURIComponent(url)}`,
-    (url: string) => `https://whateverorigin.org/get?url=${encodeURIComponent(url)}`
+type ProxyDef = { build: (url: string) => string; headers?: Record<string, string> };
+
+// 順序即優先序。r.jina.ai 排第一：2026-07-30 實測只有它同時滿足
+// 「回應帶 Access-Control-Allow-Origin」與「能取回 mis.twse 即時報價」，
+// 其餘公用代理當時分別回 500 / 403 / 429 或直接逾時。
+const PROXY_BUILDERS: ProxyDef[] = [
+    { build: (url: string) => `https://r.jina.ai/${url}`, headers: { 'X-Return-Format': 'text' } },
+    { build: (url: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}` },
+    { build: (url: string) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}` },
+    { build: (url: string) => `https://corsproxy.io/?url=${encodeURIComponent(url)}` },
+    { build: (url: string) => `https://api.cors.lol/?url=${encodeURIComponent(url)}` },
+    { build: (url: string) => `https://whateverorigin.org/get?url=${encodeURIComponent(url)}` }
 ];
 
 // 回應必須是合法 JSON 物件或「陣列」。舊版只接受 '{' 開頭，
 // 導致 TWSE / TPEx OpenAPI 這類回傳陣列的來源一律被判定為失敗。
-const parseJsonPayload = (text: string): any => {
+export const parseJsonPayload = (text: string): any => {
     if (!text) return null;
     const trimmed = text.trim();
-    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null;
-    try {
-        return JSON.parse(trimmed);
-    } catch (e) {
-        return null;
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+        try {
+            return JSON.parse(trimmed);
+        } catch (e) { /* 落到下方的內嵌擷取 */ }
     }
+    // 代理有時會在 JSON 外層包上說明文字（例如 r.jina.ai 的 markdown 模式），
+    // 這種情況仍可把內嵌的 JSON 主體抽出來用。
+    const embedded = trimmed.match(/[{[][\s\S]*[}\]]/);
+    if (embedded) {
+        try {
+            return JSON.parse(embedded[0]);
+        } catch (e) { /* 確實不是 JSON */ }
+    }
+    return null;
 };
 
 export const safeFetchJson = async (targetUrl: string, init?: RequestInit): Promise<any> => {
@@ -727,9 +741,12 @@ export const safeFetchJson = async (targetUrl: string, init?: RequestInit): Prom
     // 本身開放 CORS 的來源直連失敗就是真的失敗，不必再繞代理浪費時間。
     if (isCorsEnabledUrl(targetUrl)) return null;
 
-    for (const proxyFn of PROXY_BUILDERS) {
+    for (const proxy of PROXY_BUILDERS) {
         try {
-            const res = await fetchWithTimeout(proxyFn(targetUrl), init);
+            const merged: RequestInit = proxy.headers
+                ? { ...init, headers: { ...(init?.headers as any), ...proxy.headers } }
+                : init;
+            const res = await fetchWithTimeout(proxy.build(targetUrl), merged, 15000);
             if (!res.ok) continue;
             const text = await res.text();
             const parsed = parseJsonPayload(text);
@@ -747,30 +764,99 @@ export const safeFetchJson = async (targetUrl: string, init?: RequestInit): Prom
     return null;
 };
 
-export const fetchTWStockOfficialPrice = async (ticker: string): Promise<{ price: number; prevClose?: number; name?: string } | null> => {
-    const cleanTicker = ticker.split('.')[0].trim().toUpperCase();
-    const urls = [
-        `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_${cleanTicker}.tw`,
-        `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=otc_${cleanTicker}.tw`
-    ];
+export type RealtimeQuote = { price: number; prevClose: number; name?: string; time?: string; isLive: boolean };
 
-    for (const url of urls) {
+// 從 mis.twse 的單筆報價推導出「當下最合理的成交價」。
+//
+// 重點：z（最近成交價）在盤中很常是 "-"，代表該撮合秒沒有成交，
+// 並不代表今天沒開盤。舊版一遇到 "-" 就直接退回 y（昨收），
+// 這正是「更新後只變成昨天收盤價」的來源。
+// 因此改為 z -> 委買委賣中價 -> pz(前次成交) -> y(昨收) 逐級退讓，
+// 只有真的完全沒有盤中資訊時才會落到昨收。
+export const pickRealtimePrice = (item: any): RealtimeQuote | null => {
+    if (!item || !item.c) return null;
+
+    const num = (v: any) => {
+        const n = parseFloat(v);
+        return isNaN(n) ? 0 : n;
+    };
+    const firstOf = (v: any) => num(String(v || '').split('_')[0]);
+
+    const y = num(item.y);
+    const z = num(item.z);
+    const bid = firstOf(item.b);
+    const ask = firstOf(item.a);
+    const pz = num(item.pz);
+    const mid = (bid > 0 && ask > 0) ? (bid + ask) / 2 : 0;
+
+    let price = 0;
+    let isLive = true;
+    if (z > 0) price = z;
+    else if (mid > 0) price = mid;
+    else if (pz > 0) price = pz;
+    else if (bid > 0) price = bid;
+    else if (ask > 0) price = ask;
+    else { price = y; isLive = false; }
+
+    if (!(price > 0)) return null;
+    return {
+        price,
+        prevClose: y > 0 ? y : price,
+        name: item.n || undefined,
+        time: item.t || undefined,
+        isLive
+    };
+};
+
+// 一次向 mis.twse 取回多檔即時報價。
+//
+// 走批次的理由：代理有速率限制，逐檔查詢很快就會被擋，
+// 而 mis.twse 允許用 | 串接多個 ex_ch，數十檔只需一次請求。
+// 由於不見得知道標的屬上市或上櫃，tse_ 與 otc_ 同時查詢；
+// 不存在的代號 mis.twse 會回空物件（沒有 c 欄位），過濾掉即可。
+export const fetchTWRealtimeBatch = async (tickers: string[]): Promise<Map<string, RealtimeQuote>> => {
+    const result = new Map<string, RealtimeQuote>();
+
+    const codes = Array.from(new Set(
+        (tickers || [])
+            .map(t => String(t || '').split('.')[0].trim().toUpperCase())
+            .filter(c => /^[0-9]{4,6}[A-Z]?$/.test(c))
+    ));
+    if (codes.length === 0) return result;
+
+    const CHUNK = 25; // 每批 25 檔 => 50 個 ex_ch，避免單一請求過長
+    for (let i = 0; i < codes.length; i += CHUNK) {
+        const batch = codes.slice(i, i + CHUNK);
+        const exCh = batch.map(c => `tse_${c}.tw`).concat(batch.map(c => `otc_${c}.tw`)).join('|');
+        const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${exCh}&json=1&delay=0`;
+
         try {
             const json = await safeFetchJson(url);
-            if (json?.msgArray?.[0]) {
-                const item = json.msgArray[0];
-                const y = parseFloat(item.y);
-                const z = parseFloat(item.z);
-                const price = (!isNaN(z) && z > 0) ? z : (!isNaN(y) ? y : 0);
-                if (price > 0) {
-                    return {
-                        price,
-                        prevClose: !isNaN(y) ? y : price,
-                        name: item.n
-                    };
+            const arr: any[] = json?.msgArray || [];
+            arr.forEach(item => {
+                const quote = pickRealtimePrice(item);
+                if (!quote) return;
+                const code = String(item.c).trim().toUpperCase();
+                // 同一代號若上市與上櫃都有回應，保留帶有盤中價的那一筆
+                const prev = result.get(code);
+                if (!prev || (!prev.isLive && quote.isLive)) {
+                    result.set(code, quote);
                 }
-            }
-        } catch (e) {}
+            });
+        } catch (e) {
+            console.warn('fetchTWRealtimeBatch 批次失敗', e);
+        }
+    }
+
+    return result;
+};
+
+export const fetchTWStockOfficialPrice = async (ticker: string): Promise<{ price: number; prevClose?: number; name?: string } | null> => {
+    const cleanTicker = ticker.split('.')[0].trim().toUpperCase();
+    const map = await fetchTWRealtimeBatch([cleanTicker]);
+    const hit = map.get(cleanTicker);
+    if (hit) {
+        return { price: hit.price, prevClose: hit.prevClose, name: hit.name };
     }
     return null;
 };
@@ -788,9 +874,12 @@ export const corsFetch = async (targetUrl: string, init?: RequestInit): Promise<
         }
     }
 
-    for (const proxyFn of PROXY_BUILDERS) {
+    for (const proxy of PROXY_BUILDERS) {
         try {
-            const proxyRes = await fetchWithTimeout(proxyFn(targetUrl), init);
+            const merged: RequestInit = proxy.headers
+                ? { ...init, headers: { ...(init?.headers as any), ...proxy.headers } }
+                : init;
+            const proxyRes = await fetchWithTimeout(proxy.build(targetUrl), merged, 15000);
             if (proxyRes.ok) return proxyRes;
         } catch (e) {}
     }
