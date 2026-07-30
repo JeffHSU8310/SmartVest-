@@ -60,11 +60,35 @@ export const calculateStockPerformance = async (
         let data: any = await safeFetchJson(targetUrl);
 
         if (!data?.chart?.result?.[0]) {
-            if ((stock.market === Market.TW || stock.market === Market.BOND) && symbol.endsWith('.TW')) {
-                 const otcSymbol = symbol.replace('.TW', '.TWO');
-                 const otcUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${otcSymbol}?period1=${period1}&period2=${period2}&interval=${interval}&events=div|split`;
-                 data = await safeFetchJson(otcUrl);
-            }
+            try {
+                const cleanTicker = stock.ticker.split('.')[0].toUpperCase();
+                const isTW = stock.market === Market.TW || stock.market === Market.BOND || symbol.endsWith('.TW') || symbol.endsWith('.TWO');
+                const dataset = isTW ? 'TaiwanStockPrice' : 'USStockPrice';
+                const fmUrl = `https://api.finmindtrade.com/api/v4/data?dataset=${dataset}&data_id=${encodeURIComponent(cleanTicker)}&start_date=${startDate}&end_date=${endDate}`;
+                const fmRes = await fetch(fmUrl);
+                if (fmRes.ok) {
+                    const fmJson = await fmRes.json();
+                    if (fmJson.data && fmJson.data.length > 0) {
+                        const startObj = fmJson.data[0];
+                        const endObj = fmJson.data[fmJson.data.length - 1];
+                        const sPrice = startObj.close ?? startObj.Close ?? 0;
+                        const ePrice = endObj.close ?? endObj.Close ?? 0;
+                        if (sPrice > 0 && ePrice > 0) {
+                            const diff = ePrice - sPrice;
+                            const rate = (diff / sPrice) * 100;
+                            return {
+                                success: true,
+                                startPrice: sPrice,
+                                endPrice: ePrice,
+                                dividends: 0,
+                                returnRate: rate,
+                                totalDiff: diff,
+                                actualStartDate: startObj.date
+                            };
+                        }
+                    }
+                }
+            } catch (e) {}
         }
 
         if (!data?.chart?.result?.[0]) return { success: false, error: 'No Data' };
@@ -723,6 +747,44 @@ export const fetchYahooChartDirect = async (symbol: string, range: string = '5d'
     return null;
 };
 
+export const fetchFinMindQuote = async (symbol: string): Promise<any> => {
+    try {
+        const cleanSymbol = symbol.trim().split('.')[0].toUpperCase();
+        const isTW = symbol.endsWith('.TW') || symbol.endsWith('.TWO') || /^\d{4,6}[A-Za-z]?$/.test(cleanSymbol);
+        const dataset = isTW ? 'TaiwanStockPrice' : 'USStockPrice';
+        
+        const now = new Date();
+        const dStr = new Date(now.getTime() - 15 * 86400 * 1000).toISOString().split('T')[0];
+        
+        const url = `https://api.finmindtrade.com/api/v4/data?dataset=${dataset}&data_id=${encodeURIComponent(cleanSymbol)}&start_date=${dStr}`;
+        const res = await fetch(url);
+        if (res.ok) {
+            const json = await res.json();
+            if (json.data && json.data.length > 0) {
+                const latest = json.data[json.data.length - 1];
+                const prev = json.data.length > 1 ? json.data[json.data.length - 2] : latest;
+                const price = latest.close ?? latest.Close ?? 0;
+                const prevClose = prev.close ?? prev.Close ?? price;
+                
+                if (price > 0) {
+                    return {
+                        success: true,
+                        regularMarketPrice: price,
+                        previousClose: prevClose,
+                        shortName: cleanSymbol,
+                        symbol: symbol,
+                        currency: isTW ? 'TWD' : 'USD',
+                        marketState: 'REGULAR'
+                    };
+                }
+            }
+        }
+    } catch (e) {
+        console.warn('FinMind quote fetch failed for ' + symbol, e);
+    }
+    return { success: false };
+};
+
 export const fetchCurrentYahooQuote = async (symbol: string): Promise<any> => {
     try {
         if (typeof window !== 'undefined' && (window as any).electronAPI && (window as any).electronAPI.fetchYahooQuote) {
@@ -735,6 +797,13 @@ export const fetchCurrentYahooQuote = async (symbol: string): Promise<any> => {
             }
         }
 
+        // 1. 優先使用百分之百開放 CORS 的 FinMind API
+        const fmRes = await fetchFinMindQuote(symbol);
+        if (fmRes.success) {
+            return fmRes;
+        }
+
+        // 2. 備援打 TWSE 官方
         const cleanSymbol = symbol.trim();
         const ticker = cleanSymbol.split('.')[0];
         const isTW = cleanSymbol.endsWith('.TW') || cleanSymbol.endsWith('.TWO') || /^\d{4,6}[A-Za-z]?$/.test(ticker);
@@ -754,6 +823,7 @@ export const fetchCurrentYahooQuote = async (symbol: string): Promise<any> => {
             }
         }
 
+        // 3. 全球標的直連
         const chartData = await fetchYahooChartDirect(symbol, '5d', '1d');
         if (chartData && chartData.meta) {
             const meta = chartData.meta;
