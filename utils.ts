@@ -57,36 +57,13 @@ export const calculateStockPerformance = async (
         
         const targetUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?period1=${period1}&period2=${period2}&interval=${interval}&events=div|split`;
         
-        const proxies = [
-            (url: string) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-            (url: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
-        ];
-
-        let data: any = null;
-        for (const proxy of proxies) {
-            try {
-                const res = await fetch(proxy(targetUrl));
-                if (res.ok) {
-                    data = await res.json();
-                    if (data.chart?.result?.[0]) break;
-                }
-            } catch (e) { console.warn('Proxy failed', e); }
-        }
+        let data: any = await safeFetchJson(targetUrl);
 
         if (!data?.chart?.result?.[0]) {
-            // Fix: Check OTC fallback for BOND market as well
             if ((stock.market === Market.TW || stock.market === Market.BOND) && symbol.endsWith('.TW')) {
                  const otcSymbol = symbol.replace('.TW', '.TWO');
                  const otcUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${otcSymbol}?period1=${period1}&period2=${period2}&interval=${interval}&events=div|split`;
-                 for (const proxy of proxies) {
-                    try {
-                        const res = await fetch(proxy(otcUrl));
-                        if (res.ok) {
-                            data = await res.json();
-                            if (data.chart?.result?.[0]) break;
-                        }
-                    } catch (e) {}
-                }
+                 data = await safeFetchJson(otcUrl);
             }
         }
 
@@ -638,11 +615,65 @@ export const exportToCSV = (
   document.body.removeChild(link);
 };
 
-const CORS_PROXIES = [
-    (url: string) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-    (url: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-    (url: string) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`
-];
+export const safeFetchJson = async (targetUrl: string, init?: RequestInit): Promise<any> => {
+    try {
+        const res = await fetch(targetUrl, init);
+        if (res.ok) {
+            const text = await res.text();
+            if (text && text.trim().startsWith('{')) {
+                return JSON.parse(text);
+            }
+        }
+    } catch (e) {}
+
+    const proxies = [
+        (url: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+        (url: string) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`
+    ];
+
+    for (const proxyFn of proxies) {
+        try {
+            const pUrl = proxyFn(targetUrl);
+            const res = await fetch(pUrl, init);
+            if (res.ok) {
+                const text = await res.text();
+                if (text && text.trim().startsWith('{')) {
+                    return JSON.parse(text);
+                }
+            }
+        } catch (e) {}
+    }
+
+    return null;
+};
+
+export const fetchTWStockOfficialPrice = async (ticker: string): Promise<{ price: number; prevClose?: number; name?: string } | null> => {
+    const cleanTicker = ticker.split('.')[0].trim().toUpperCase();
+    const urls = [
+        `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_${cleanTicker}.tw`,
+        `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=otc_${cleanTicker}.tw`
+    ];
+
+    for (const url of urls) {
+        try {
+            const json = await safeFetchJson(url);
+            if (json?.msgArray?.[0]) {
+                const item = json.msgArray[0];
+                const y = parseFloat(item.y);
+                const z = parseFloat(item.z);
+                const price = (!isNaN(z) && z > 0) ? z : (!isNaN(y) ? y : 0);
+                if (price > 0) {
+                    return {
+                        price,
+                        prevClose: !isNaN(y) ? y : price,
+                        name: item.n
+                    };
+                }
+            }
+        } catch (e) {}
+    }
+    return null;
+};
 
 export const corsFetch = async (targetUrl: string, init?: RequestInit): Promise<Response> => {
     try {
@@ -650,7 +681,12 @@ export const corsFetch = async (targetUrl: string, init?: RequestInit): Promise<
         if (directRes.ok) return directRes;
     } catch (e) {}
 
-    for (const proxyFn of CORS_PROXIES) {
+    const proxies = [
+        (url: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+        (url: string) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`
+    ];
+
+    for (const proxyFn of proxies) {
         try {
             const pUrl = proxyFn(targetUrl);
             const proxyRes = await fetch(pUrl, init);
@@ -695,6 +731,25 @@ export const fetchCurrentYahooQuote = async (symbol: string): Promise<any> => {
                 return {
                     success: true,
                     ...res.data
+                };
+            }
+        }
+
+        const cleanSymbol = symbol.trim();
+        const ticker = cleanSymbol.split('.')[0];
+        const isTW = cleanSymbol.endsWith('.TW') || cleanSymbol.endsWith('.TWO') || /^\d{4,6}[A-Za-z]?$/.test(ticker);
+
+        if (isTW) {
+            const twData = await fetchTWStockOfficialPrice(ticker);
+            if (twData && twData.price > 0) {
+                return {
+                    success: true,
+                    regularMarketPrice: twData.price,
+                    previousClose: twData.prevClose || twData.price,
+                    shortName: twData.name || ticker,
+                    symbol: symbol,
+                    currency: 'TWD',
+                    marketState: 'REGULAR'
                 };
             }
         }
