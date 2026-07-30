@@ -2100,6 +2100,10 @@ function App() {
 
           const cleanCode = stock.ticker.split(".")[0].trim().toUpperCase();
 
+          // 市價是否已取得。這些快速路徑刻意「不 return」——
+          // 函式尾端還有 ETF 淨值(NAV)區塊要跑，提早返回會讓淨值停在舊值。
+          let priceResolved = false;
+
           // 最優先：盤中即時價
           const live = twRealtimeMap?.get(cleanCode);
           if (!isDesktopEnv && live && live.price > 0) {
@@ -2110,20 +2114,19 @@ function App() {
             }
             updatedStock.marketState = live.isLive ? "REGULAR" : "CLOSED";
             updatedStock.lastUpdateDate = getLocalTodayString();
-            return updatedStock;
+            priceResolved = true;
           }
 
           // 次選：全台股日收盤對照表 O(1) 拿取價格 (適用於 GitHub Pages 網頁版)
-          if (!isDesktopEnv && twMarketMap && twMarketMap.has(cleanCode)) {
+          if (!priceResolved && !isDesktopEnv && twMarketMap && twMarketMap.has(cleanCode)) {
             const matched = twMarketMap.get(cleanCode)!;
             if (matched.price > 0) {
               updatedStock.currentPrice = matched.price;
               if (matched.name && (!updatedStock.name || updatedStock.name === updatedStock.ticker)) {
                 updatedStock.name = matched.name;
               }
-              const d = new Date();
               updatedStock.lastUpdateDate = getLocalTodayString();
-              return updatedStock;
+              priceResolved = true;
             }
           }
 
@@ -2135,7 +2138,7 @@ function App() {
               !/^[0-9]{4,6}[A-Z]?(\.TW|\.TWO)?$/i.test(stock.ticker) &&
               !/^[A-Z]{1,5}$/.test(stock.ticker));
 
-          if (isProbablyFund) {
+          if (!priceResolved && isProbablyFund) {
             try {
               let fundData = null;
               if (isDesktopEnv) {
@@ -2162,11 +2165,16 @@ function App() {
           }
 
           let finalSymbol = stock.ticker;
-          try {
-            if (stock.market === Market.TW && !stock.ticker.includes("."))
-              finalSymbol = `${stock.ticker}.TW`;
+          if (stock.market === Market.TW && !stock.ticker.includes("."))
+            finalSymbol = `${stock.ticker}.TW`;
 
-            if (isDesktopEnv) {
+          // 市價已由即時報價/日收盤表取得時就別再打 Yahoo：
+          // 它較慢、盤中資料也不如 mis.twse 新，重抓只會把好資料蓋掉。
+          // 注意 finalSymbol 已在上方算好，下方的淨值區塊仍要用到它。
+          try {
+            if (priceResolved) {
+              // 市價已取得，直接進入淨值處理
+            } else if (isDesktopEnv) {
               const res =
                 await window.electronAPI!.fetchYahooQuote(finalSymbol);
               if (res.error)
@@ -2253,19 +2261,26 @@ function App() {
                 (!updatedStock.currentPrice || updatedStock.currentPrice === 0)
               ) {
                 const mktPrice = parseFloat(twseEtf.e);
-                if (!isNaN(mktPrice)) updatedStock.currentPrice = mktPrice;
+                if (!isNaN(mktPrice) && mktPrice > 0)
+                  updatedStock.currentPrice = mktPrice;
               }
               if (twseEtf.f) {
                 const officialNav = parseFloat(twseEtf.f);
-                if (!isNaN(officialNav)) {
+                // 未更新的 ETF 會回 0，寫進去會讓折溢價顯示成 -100%
+                if (!isNaN(officialNav) && officialNav > 0) {
                   updatedStock.nav = officialNav;
                   navFound = true;
                 }
               }
             }
 
+            // 只有 ETF / 基金才有淨值可言。一般個股沒有淨值，
+            // 卻為每一檔都打一次 Yahoo，既拖慢更新又只是把市價填進 nav。
+            const isEtfLike =
+              !!twseEtf || stock.market === Market.FUND || isProbablyFund;
+
             // Fallback to Yahoo QuoteSummary
-            if (!navFound) {
+            if (!navFound && isEtfLike) {
               let usNavFound = false;
               try {
                 if (isDesktopEnv) {

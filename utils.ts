@@ -1154,11 +1154,13 @@ export const fetchTWSEEtfDirect = async (): Promise<any> => {
             if (res?.data) return res.data;
         }
 
-        const url = 'https://mis.twse.com.tw/stock/api/getETFInfo.jsp';
-        const res = await corsFetch(url);
-        if (res.ok) {
-            return await res.json();
-        }
+        // 淨值來源必須是 all_etf.txt。
+        // 舊版打的 /stock/api/getETFInfo.jsp 現在回的是 HTML 網頁而非 JSON，
+        // 解析必然失敗，ETF 淨值因此一直停在舊值。
+        // all_etf.txt 才是 MIS 的 ETF 淨值資料檔，且結構同為 { a1: [ { msgArray: [...] } ] }：
+        //   a=代號 b=名稱 e=市價 f=淨值 g=折溢價% i=日期 j=時間
+        const json = await safeFetchJson('https://mis.twse.com.tw/stock/data/all_etf.txt');
+        if (json?.a1) return json;
     } catch (e) {
         console.warn('Direct fetch for TWSE ETF failed', e);
     }
