@@ -36,7 +36,11 @@ def deploy_dist_to_root():
     print("[OK] 已成功複製編譯後的 assets JS/CSS 資源檔至根目錄！")
 
     # 複製與加工 index.html，寫入防快取標籤與 timestamp 版本號
-    dist_html = os.path.join(dist_dir, 'index.html')
+    #
+    # 來源必須是 dist/app.html：Vite 的進入點是 app.html（見 vite.config.ts）。
+    # 根目錄的 index.html 是本腳本產生的「部署產物」，不可拿來當進入點，
+    # 否則 Vite 會把已編譯的 assets/*.js 當素材再包一層，原始碼從此不再被編譯。
+    dist_html = os.path.join(dist_dir, 'app.html')
     target_html = os.path.join(project_dir, 'index.html')
     if os.path.exists(dist_html):
         with open(dist_html, 'r', encoding='utf-8') as f:

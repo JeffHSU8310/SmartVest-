@@ -69,7 +69,9 @@ def build_and_prepare_assets(project_dir):
         res = subprocess.run("cmd /c \"npm run build\"", cwd=project_dir, shell=True, capture_output=True, text=True)
         dist_dir = os.path.join(project_dir, 'dist')
         dist_assets = os.path.join(dist_dir, 'assets')
-        dist_html = os.path.join(dist_dir, 'index.html')
+        # 必須取 dist/app.html：Vite 進入點是 app.html（見 vite.config.ts）。
+        # 根目錄 index.html 是部署產物，若當成進入點會讓 Vite 停止編譯原始碼。
+        dist_html = os.path.join(dist_dir, 'app.html')
         
         target_assets = os.path.join(project_dir, 'assets')
         target_html = os.path.join(project_dir, 'index.html')

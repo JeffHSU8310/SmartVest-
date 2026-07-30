@@ -31,9 +31,18 @@ jobs:
       - name: Copy Assets to Root & Update index.html
         run: python3 prepare_gh_pages.py
 
-      - name: Deploy to GitHub Pages
-        uses: Peaceiris/actions-gh-pages@v3
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./
-          publish_branch: main
+      # GitHub Pages 設定為「從 main 分支根目錄發佈」，所以建置產物必須回寫 main。
+      # 先前使用 peaceiris/actions-gh-pages 並指定 publish_branch: main，該 action
+      # 會以 "You deploy from main to main" 拒絕執行，導致每一次部署都失敗，
+      # 線上永遠停留在舊的 bundle。改為直接提交產物，並用 [skip ci] 避免遞迴觸發。
+      - name: Commit built assets back to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A index.html assets
+          if git diff --staged --quiet; then
+            echo "建置產物無變化，略過提交。"
+          else
+            git commit -m "chore(deploy): publish built assets for GitHub Pages [skip ci]"
+            git push origin HEAD:main
+          fi
