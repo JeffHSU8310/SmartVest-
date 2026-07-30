@@ -155,12 +155,22 @@ const DataTools: React.FC<Props> = ({
         console.warn('Failed to parse in-memory restore payload', e);
       }
 
-      setGhStatusMsg('🎉 雲端備份已成功還原！畫面即將更新載入最新帳目...');
+      if (res.warning) {
+        setGhStatusMsg(`🎉 帳務資料已成功還原！\n⚠️ ${res.warning}`);
+      } else {
+        setGhStatusMsg('🎉 雲端備份已成功還原！畫面即將更新載入最新帳目...');
+      }
       setTimeout(() => {
         window.location.reload();
-      }, 1200);
+      }, res.warning ? 5000 : 1200);
     } else {
-      setGhStatusMsg(`❌ 還原失敗：${res.error} (請檢查 Token 與 Gist ID 是否複製正確)`);
+      // 只有在錯誤真的與憑證/找不到有關時才提示檢查 Token，
+      // 否則像「儲存空間不足」這類訊息會被這句話帶偏方向。
+      const msg = res.error || '';
+      const authHint = /token|credential|not found|permission|401|403|404|gist/i.test(msg)
+        ? '（請檢查 Token 與 Gist ID 是否複製正確）'
+        : '';
+      setGhStatusMsg(`❌ 還原失敗：${msg}${authHint}`);
     }
   };
 

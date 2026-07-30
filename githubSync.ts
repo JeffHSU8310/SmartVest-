@@ -48,43 +48,109 @@ export const exportAllAppData = (): Record<string, any> => {
   };
 };
 
+export interface ImportResult {
+  success: boolean;
+  warning?: string;
+  error?: string;
+}
+
+// 可以再從 API 重新抓回來的大型快取。
+// iPhone Safari 的 localStorage 上限約 5MB，而且是以 UTF-16 計算
+// （字元數要乘 2），光是大盤日 K（1987 年起、上萬筆）就會佔掉 3MB 以上，
+// 因此空間不夠時優先捨棄它，保住無法重建的帳務資料。
+const REBUILDABLE_CACHE_KEYS = ['marketData'];
+
+const isQuotaError = (e: any): boolean =>
+  !!e && (
+    e.name === 'QuotaExceededError' ||
+    e.name === 'NS_ERROR_DOM_QUOTA_REACHED' ||
+    e.code === 22 || e.code === 1014
+  );
+
 // 恢復雲端數據到 LocalStorage
-export const importAllAppData = (backupPayload: Record<string, any>): boolean => {
-  if (!backupPayload || typeof backupPayload !== 'object') return false;
-  try {
-    let dataMap: Record<string, any> = {};
-
-    if (backupPayload.data && typeof backupPayload.data === 'object') {
-      dataMap = backupPayload.data;
-    } else {
-      dataMap = backupPayload;
-    }
-
-    // 1. 若內容包含 smartvest_data_v2 核心主物件
-    if (dataMap.smartvest_data_v2) {
-      const val = dataMap.smartvest_data_v2;
-      localStorage.setItem('smartvest_data_v2', typeof val === 'string' ? val : JSON.stringify(val));
-    } 
-    // 2. 若內容為直接的股票/交易/帳戶物件 { stocks, transactions, accounts }
-    else if (dataMap.stocks || dataMap.transactions || dataMap.accounts) {
-      localStorage.setItem('smartvest_data_v2', JSON.stringify(dataMap));
-    }
-    
-    // 3. 同步寫入所有包含的附屬 Key
-    Object.keys(dataMap).forEach(key => {
-      if (key !== 'smartvest_data_v2') {
-        const val = dataMap[key];
-        if (val !== null && val !== undefined) {
-          localStorage.setItem(key, typeof val === 'string' ? val : JSON.stringify(val));
-        }
-      }
-    });
-
-    return true;
-  } catch (e) {
-    console.error('Failed to import app data', e);
-    return false;
+export const importAllAppData = (backupPayload: Record<string, any>): ImportResult => {
+  if (!backupPayload || typeof backupPayload !== 'object') {
+    return { success: false, error: '備份內容格式不正確' };
   }
+
+  const dataMap: Record<string, any> =
+    (backupPayload.data && typeof backupPayload.data === 'object')
+      ? backupPayload.data
+      : backupPayload;
+
+  const droppedCaches: string[] = [];
+
+  // 1. 核心帳務資料（交易、記帳、持股）——這些重建不回來，必須優先寫入
+  try {
+    let core: any = dataMap.smartvest_data_v2;
+    // 相容：備份內容直接就是 { stocks, transactions, accounts }
+    if (core === undefined && (dataMap.stocks || dataMap.transactions || dataMap.accounts)) {
+      core = dataMap;
+    }
+
+    if (core !== undefined && core !== null) {
+      let coreObj: any = core;
+      if (typeof coreObj === 'string') {
+        try { coreObj = JSON.parse(coreObj); } catch { coreObj = null; }
+      }
+
+      if (coreObj && typeof coreObj === 'object') {
+        let written = false;
+        try {
+          localStorage.setItem('smartvest_data_v2', JSON.stringify(coreObj));
+          written = true;
+        } catch (e) {
+          if (!isQuotaError(e)) throw e;
+        }
+
+        // 空間不足：拿掉可重建的快取再寫一次，讓帳務資料仍然完整還原
+        if (!written) {
+          const slim: Record<string, any> = { ...coreObj };
+          for (const k of REBUILDABLE_CACHE_KEYS) {
+            if (slim[k] !== undefined) {
+              delete slim[k];
+              droppedCaches.push(k);
+            }
+          }
+          localStorage.setItem('smartvest_data_v2', JSON.stringify(slim));
+        }
+      } else {
+        localStorage.setItem('smartvest_data_v2', typeof core === 'string' ? core : JSON.stringify(core));
+      }
+    }
+  } catch (e: any) {
+    if (isQuotaError(e)) {
+      return {
+        success: false,
+        error: '此裝置的瀏覽器儲存空間不足，連帳務資料都寫不進去（iPhone Safari 上限約 5MB）。請改用電腦還原。'
+      };
+    }
+    console.error('Failed to import core app data', e);
+    return { success: false, error: '寫入核心帳務資料失敗' };
+  }
+
+  // 2. 其餘附屬 Key：逐一寫入，單一失敗不該讓整次還原被判定失敗
+  const failedKeys: string[] = [];
+  Object.keys(dataMap).forEach(key => {
+    if (key === 'smartvest_data_v2') return;
+    const val = dataMap[key];
+    if (val === null || val === undefined) return;
+    try {
+      localStorage.setItem(key, typeof val === 'string' ? val : JSON.stringify(val));
+    } catch (e) {
+      failedKeys.push(key);
+    }
+  });
+
+  let warning: string | undefined;
+  if (droppedCaches.length > 0) {
+    warning = '因手機儲存空間有限，已略過大盤走勢快取（下次開啟大盤圖時會自動重新下載，帳務資料完全不受影響）。';
+  }
+  if (failedKeys.length > 0) {
+    warning = (warning ? warning + ' ' : '') + `另有 ${failedKeys.length} 項次要設定未寫入。`;
+  }
+
+  return { success: true, warning };
 };
 
 // 建立或更新 GitHub Gist
@@ -226,7 +292,7 @@ export const syncToGitHubGist = async (rawToken: string, rawGistId?: string): Pr
 };
 
 // 從 GitHub Gist 下載並還原資料
-export const restoreFromGitHubGist = async (rawToken: string, rawGistId: string): Promise<{ success: boolean; error?: string }> => {
+export const restoreFromGitHubGist = async (rawToken: string, rawGistId: string): Promise<{ success: boolean; error?: string; warning?: string }> => {
   const token = (rawToken || '').trim().replace(/^["']|["']$/g, '');
   let gistId = (rawGistId || '').trim();
 
@@ -329,8 +395,8 @@ export const restoreFromGitHubGist = async (rawToken: string, rawGistId: string)
       return { success: false, error: `雲端資料格式不完整 (${parseErr.message})，請於電腦端再次按下「備份上傳至 GitHub」更新存檔。` };
     }
 
-    const ok = importAllAppData(backupPayload);
-    if (ok) {
+    const imported = importAllAppData(backupPayload);
+    if (imported.success) {
       const currentConfig = getGitHubSyncConfig();
       saveGitHubSyncConfig({
         ...currentConfig,
@@ -338,10 +404,9 @@ export const restoreFromGitHubGist = async (rawToken: string, rawGistId: string)
         gistId,
         lastSyncedAt: new Date().toLocaleString('zh-TW')
       });
-      return { success: true };
-    } else {
-      return { success: false, error: '解析或還原備份資料失敗' };
+      return { success: true, warning: imported.warning };
     }
+    return { success: false, error: imported.error || '解析或還原備份資料失敗' };
   } catch (e: any) {
     return { success: false, error: e.message || '連線至 GitHub 失敗' };
   }
