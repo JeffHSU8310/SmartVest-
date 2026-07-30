@@ -17,7 +17,7 @@ import {
   XCircle,
   Eraser,
 } from "lucide-react";
-import { fetchYahooHistoryUniversal, calculateSMA } from "../utils";
+import { fetchYahooHistoryUniversal, calculateSMA, fetchTwseOpenDataDirect } from "../utils";
 
 interface StockPoolItem {
   symbol: string;
@@ -274,12 +274,7 @@ export default function StockScreener({
         if (isElectron) {
           twsePrices = await (window as any).electronAPI.fetchTwsePrices();
         } else {
-          const twsePriceRes = await fetch("/api/twse/prices");
-          if (twsePriceRes.ok) {
-            twsePrices = await twsePriceRes.json();
-          } else {
-            console.warn("TWSE Prices status error:", twsePriceRes.status);
-          }
+          twsePrices = await fetchTwseOpenDataDirect('prices');
         }
       } catch (err: any) {
         console.error("Failed to fetch TWSE prices:", err);
@@ -291,12 +286,7 @@ export default function StockScreener({
         if (isElectron) {
           twsePes = await (window as any).electronAPI.fetchTwsePe();
         } else {
-          const twsePeRes = await fetch("/api/twse/pe");
-          if (twsePeRes.ok) {
-            twsePes = await twsePeRes.json();
-          } else {
-            console.warn("TWSE PE status error:", twsePeRes.status);
-          }
+          twsePes = await fetchTwseOpenDataDirect('pe');
         }
       } catch (err: any) {
         console.error("Failed to fetch TWSE PE:", err);
@@ -308,12 +298,7 @@ export default function StockScreener({
         if (isElectron) {
           tpexPrices = await (window as any).electronAPI.fetchTpexPrices();
         } else {
-          const tpexPriceRes = await fetch("/api/tpex/prices");
-          if (tpexPriceRes.ok) {
-            tpexPrices = await tpexPriceRes.json();
-          } else {
-            console.warn("TPEx Prices status error:", tpexPriceRes.status);
-          }
+          tpexPrices = await fetchTwseOpenDataDirect('prices');
         }
       } catch (err: any) {
         console.error("Failed to fetch TPEx prices:", err);
@@ -325,12 +310,7 @@ export default function StockScreener({
         if (isElectron) {
           tpexPes = await (window as any).electronAPI.fetchTpexPe();
         } else {
-          const tpexPeRes = await fetch("/api/tpex/pe");
-          if (tpexPeRes.ok) {
-            tpexPes = await tpexPeRes.json();
-          } else {
-            console.warn("TPEx PE status error:", tpexPeRes.status);
-          }
+          tpexPes = await fetchTwseOpenDataDirect('pe');
         }
       } catch (err: any) {
         console.error("Failed to fetch TPEx PE:", err);
@@ -342,12 +322,7 @@ export default function StockScreener({
         if (isElectron) {
           twseInst = await (window as any).electronAPI.fetchTwseInst();
         } else {
-          const twseInstRes = await fetch("/api/twse/inst");
-          if (twseInstRes.ok) {
-            twseInst = await twseInstRes.json();
-          } else {
-            console.warn("TWSE Inst status error:", twseInstRes.status);
-          }
+          twseInst = await fetchTwseOpenDataDirect('inst');
         }
       } catch (err: any) {
         console.error("Failed to fetch TWSE Inst:", err);

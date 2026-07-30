@@ -638,9 +638,58 @@ export const exportToCSV = (
   document.body.removeChild(link);
 };
 
+const CORS_PROXIES = [
+    (url: string) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+    (url: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+    (url: string) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`
+];
+
+export const corsFetch = async (targetUrl: string, init?: RequestInit): Promise<Response> => {
+    try {
+        const directRes = await fetch(targetUrl, init);
+        if (directRes.ok) return directRes;
+    } catch (e) {}
+
+    for (const proxyFn of CORS_PROXIES) {
+        try {
+            const pUrl = proxyFn(targetUrl);
+            const proxyRes = await fetch(pUrl, init);
+            if (proxyRes.ok) return proxyRes;
+        } catch (e) {}
+    }
+
+    throw new Error(`無法連線至目標 URL: ${targetUrl}`);
+};
+
+export const fetchYahooChartDirect = async (symbol: string, range: string = '5d', interval: string = '1d') => {
+    let cleanSymbol = symbol.trim();
+    if (!cleanSymbol.includes('.') && /^\d{4}$/.test(cleanSymbol)) {
+        cleanSymbol = `${cleanSymbol}.TW`;
+    }
+
+    const targets = [cleanSymbol];
+    if (cleanSymbol.endsWith('.TW')) {
+        targets.push(cleanSymbol.replace('.TW', '.TWO'));
+    }
+
+    for (const sym of targets) {
+        const rawUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=${interval}&range=${range}`;
+        try {
+            const res = await corsFetch(rawUrl);
+            if (res.ok) {
+                const json = await res.json();
+                if (json?.chart?.result?.[0]) {
+                    return json.chart.result[0];
+                }
+            }
+        } catch (e) {}
+    }
+    return null;
+};
+
 export const fetchCurrentYahooQuote = async (symbol: string): Promise<any> => {
     try {
-        if ((window as any).electronAPI && (window as any).electronAPI.fetchYahooQuote) {
+        if (typeof window !== 'undefined' && (window as any).electronAPI && (window as any).electronAPI.fetchYahooQuote) {
             const res = await (window as any).electronAPI.fetchYahooQuote(symbol);
             if (res && res.data) {
                 return {
@@ -648,39 +697,132 @@ export const fetchCurrentYahooQuote = async (symbol: string): Promise<any> => {
                     ...res.data
                 };
             }
-        } else {
-            const res = await fetch(`/api/yahoo/quote?symbol=${encodeURIComponent(symbol)}`);
-            if (res.ok) {
-                const data = await res.json();
-                if (data && (data.regularMarketPrice != null || data.shortName)) {
-                    return {
-                        success: true,
-                        ...data
-                    };
-                }
-            }
+        }
+
+        const chartData = await fetchYahooChartDirect(symbol, '5d', '1d');
+        if (chartData && chartData.meta) {
+            const meta = chartData.meta;
+            const quotes = chartData.indicators?.quote?.[0];
+            const closes = quotes?.close || [];
+            const validCloses = closes.filter((c: any) => typeof c === 'number' && !isNaN(c));
+            const lastClose = validCloses.length > 0 ? validCloses[validCloses.length - 1] : meta.regularMarketPrice;
+
+            return {
+                success: true,
+                regularMarketPrice: meta.regularMarketPrice ?? lastClose,
+                previousClose: meta.chartPreviousClose ?? meta.previousClose ?? lastClose,
+                shortName: meta.shortName || meta.symbol || symbol,
+                symbol: meta.symbol || symbol,
+                currency: meta.currency || 'TWD',
+                marketState: meta.marketState || 'REGULAR'
+            };
         }
     } catch (e) {
-        console.warn("fetch failed", e);
+        console.warn("fetchCurrentYahooQuote failed", e);
     }
     return { success: false, error: 'No data' };
 };
 
 export const fetchYahooHistoryUniversal = async (symbol: string, period1: number, period2: number, interval: string = '1d') => {
-    // Attempt TW/US fallback locally if needed, but normally caller handles it.
-    if (typeof window !== 'undefined' && (window as any).electronAPI) {
+    if (typeof window !== 'undefined' && (window as any).electronAPI && (window as any).electronAPI.fetchYahooHistory) {
         const res = await (window as any).electronAPI.fetchYahooHistory({ symbol, period1, period2, interval });
         if (res && res.error) {
             throw new Error(res.error);
         }
         return res && res.data ? res.data : res;
-    } else {
-        const baseUrl = typeof window !== 'undefined' ? '' : 'http://localhost:3000';
-        const res = await fetch(`${baseUrl}/api/yahoo/history?symbol=${encodeURIComponent(symbol)}&period1=${period1}&period2=${period2}&interval=${interval}`);
+    }
+
+    let cleanSymbol = symbol.trim();
+    if (!cleanSymbol.includes('.') && /^\d{4}$/.test(cleanSymbol)) {
+        cleanSymbol = `${cleanSymbol}.TW`;
+    }
+
+    const rawUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(cleanSymbol)}?period1=${period1}&period2=${period2}&interval=${interval}`;
+    try {
+        const res = await corsFetch(rawUrl);
         if (!res.ok) throw new Error("API response error: " + res.status);
-        return await res.json();
+        const json = await res.json();
+        if (json?.chart?.result?.[0]) {
+            return json.chart.result[0];
+        }
+        throw new Error("Yahoo Finance returned invalid payload");
+    } catch (err: any) {
+        if (cleanSymbol.endsWith('.TW')) {
+            const fallbackSymbol = cleanSymbol.replace('.TW', '.TWO');
+            const fbUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(fallbackSymbol)}?period1=${period1}&period2=${period2}&interval=${interval}`;
+            const fbRes = await corsFetch(fbUrl);
+            if (fbRes.ok) {
+                const fbJson = await fbRes.json();
+                if (fbJson?.chart?.result?.[0]) {
+                    return fbJson.chart.result[0];
+                }
+            }
+        }
+        throw err;
     }
 };
+
+export const fetchFearGreedDirect = async (): Promise<any> => {
+    try {
+        if (typeof window !== 'undefined' && (window as any).electronAPI && (window as any).electronAPI.fetchFearGreed) {
+            const res = await (window as any).electronAPI.fetchFearGreed();
+            if (res?.data?.fear_and_greed) return res.data.fear_and_greed;
+        }
+
+        const url = 'https://production.dataviz.cnn.io/index/fearandgreed/graphdata';
+        const res = await corsFetch(url);
+        if (res.ok) {
+            const json = await res.json();
+            if (json?.fear_and_greed) {
+                return json.fear_and_greed;
+            }
+        }
+    } catch (e) {
+        console.warn('Direct fetch for Fear & Greed failed, returning fallback', e);
+    }
+    return {
+        score: 55,
+        rating: 'neutral',
+        timestamp: new Date().toISOString()
+    };
+};
+
+export const fetchTWSEEtfDirect = async (): Promise<any> => {
+    try {
+        if (typeof window !== 'undefined' && (window as any).electronAPI && (window as any).electronAPI.fetchTWSE) {
+            const res = await (window as any).electronAPI.fetchTWSE();
+            if (res?.data) return res.data;
+        }
+
+        const url = 'https://mis.twse.com.tw/stock/api/getETFInfo.jsp';
+        const res = await corsFetch(url);
+        if (res.ok) {
+            return await res.json();
+        }
+    } catch (e) {
+        console.warn('Direct fetch for TWSE ETF failed', e);
+    }
+    return null;
+};
+
+export const fetchTwseOpenDataDirect = async (type: 'prices' | 'pe' | 'inst' | 'margin'): Promise<any> => {
+    try {
+        let endpoint = '';
+        if (type === 'prices') endpoint = 'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL';
+        else if (type === 'pe') endpoint = 'https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_ALL';
+        else if (type === 'inst') endpoint = 'https://openapi.twse.com.tw/v1/fund/T86_ALL';
+        else if (type === 'margin') endpoint = 'https://openapi.twse.com.tw/v1/margin/MI_MARGIN';
+
+        if (endpoint) {
+            const res = await corsFetch(endpoint);
+            if (res.ok) return await res.json();
+        }
+    } catch (e) {
+        console.warn(`fetchTwseOpenDataDirect ${type} failed`, e);
+    }
+    return [];
+};
+
 
 
 export const fetchDcaPrice = async (symbol: string, targetDate: string): Promise<{price: number, date: string, isEstimated?: boolean} | null> => {

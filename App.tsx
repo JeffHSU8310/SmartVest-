@@ -28,6 +28,7 @@ import {
   calculateStockPerformance,
   fetchCurrentYahooQuote,
   fetchMADataForSymbol,
+  fetchTWSEEtfDirect,
 } from "./utils";
 import StockManager from "./components/StockManager";
 import AccountManager from "./components/AccountManager";
@@ -2047,8 +2048,7 @@ function App() {
           if (res.error) errorMessages.push(`TWSE Error: ${res.error}`);
           if (res.data) twseData = res.data;
         } else {
-          const res = await fetch("/api/twse-etfs");
-          if (res.ok) twseData = await res.json();
+          twseData = await fetchTWSEEtfDirect();
         }
 
         if (twseData?.a1) {
@@ -2232,15 +2232,10 @@ function App() {
                     usNavFound = true;
                   }
                 } else {
-                  const summaryRes = await fetch(
-                    `/api/yahoo/summaryDetail?symbol=${finalSymbol}`,
-                  );
-                  if (summaryRes.ok) {
-                    const summaryData = await summaryRes.json();
-                    if (summaryData.nav != null) {
-                      updatedStock.nav = summaryData.nav;
-                      usNavFound = true;
-                    }
+                  const quoteRes = await fetchCurrentYahooQuote(finalSymbol);
+                  if (quoteRes.success && quoteRes.regularMarketPrice != null) {
+                    if (!updatedStock.nav) updatedStock.nav = quoteRes.regularMarketPrice;
+                    usNavFound = true;
                   }
                 }
               } catch (e: any) {

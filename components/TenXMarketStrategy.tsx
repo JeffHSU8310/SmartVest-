@@ -3,6 +3,7 @@ import { Stock, MarketFilter, Market, Account, Transaction, TransactionType } fr
 import { Rocket, Target, Zap, TrendingUp, Search, X, AlertCircle, RefreshCw, Info, Calendar, DollarSign, Settings, Wallet, Plus } from 'lucide-react';
 import QuickAddStockModal from './QuickAddStockModal';
 import StockManager from './StockManager';
+import { fetchYahooHistoryUniversal } from '../utils';
 
 interface StrategyMetrics {
   symbol: string;
@@ -151,12 +152,11 @@ const TenXMarketStrategy: React.FC<TenXMarketStrategyProps> = ({
               if (prices.length > 0) latestPrice = prices[prices.length - 1];
             }
           } else {
-            const res = await fetch(`/api/yahoo/history?symbol=${symbol}&period1=${Math.floor(now.getTime() / 1000) - 86400 * 7}&period2=${endTs}&interval=1d`);
-            if (res.ok) {
-              const d = await res.json();
+            try {
+              const d = await fetchYahooHistoryUniversal(symbol, Math.floor(now.getTime() / 1000) - 86400 * 7, endTs, '1d');
               const prices = d.indicators?.adjclose?.[0]?.adjclose?.filter((p: number) => p != null);
               if (prices && prices.length > 0) latestPrice = prices[prices.length - 1];
-            }
+            } catch (e) {}
           }
 
           // 2. Fetch Historical Monthly Data
@@ -169,8 +169,9 @@ const TenXMarketStrategy: React.FC<TenXMarketStrategyProps> = ({
             });
             if (res.data) data = res.data;
           } else {
-            const res = await fetch(`/api/yahoo/history?symbol=${symbol}&period1=${startTs}&period2=${endTs}&interval=1mo`);
-            if (res.ok) data = await res.json();
+            try {
+              data = await fetchYahooHistoryUniversal(symbol, startTs, endTs, '1mo');
+            } catch (e) {}
           }
 
           if (data && data.timestamp && data.indicators?.adjclose?.[0]?.adjclose) {
@@ -220,8 +221,9 @@ const TenXMarketStrategy: React.FC<TenXMarketStrategyProps> = ({
                 });
                 if (res.data) weeklyData = res.data;
               } else {
-                const res = await fetch(`/api/yahoo/history?symbol=${symbol}&period1=${startTs}&period2=${endTs}&interval=1wk`);
-                if (res.ok) weeklyData = await res.json();
+                try {
+                  weeklyData = await fetchYahooHistoryUniversal(symbol, startTs, endTs, '1wk');
+                } catch (e) {}
               }
 
               let w0 = 0, w1 = 0, w2 = 0, w4 = 0;

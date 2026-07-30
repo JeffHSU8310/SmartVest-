@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
 import TechSettingsModal from './TechSettingsModal';
-import { fetchYahooHistoryUniversal, fetchCurrentYahooQuote, getLocalTodayString, getLocalPastYearString } from '../utils';
+import { fetchYahooHistoryUniversal, fetchCurrentYahooQuote, getLocalTodayString, getLocalPastYearString, fetchFearGreedDirect } from '../utils';
 
 const COLORS = {
   UP: '#ef4444',
@@ -352,23 +352,12 @@ const MarketMonitor: React.FC<Props> = ({ data = [], onUpdateData, techSettings,
 
   const fetchFearGreed = async () => {
       try {
-          let fg: any = null;
-          if ((window as any).electronAPI && (window as any).electronAPI.fetchFearGreed) {
-              const res = await (window as any).electronAPI.fetchFearGreed();
-              if (res.data) fg = res.data.fear_and_greed;
-          } else {
-              const res = await fetch('/api/fear-greed');
-              if (res.ok) {
-                  const json = await res.json();
-                  fg = json.fear_and_greed;
-              }
-          }
-
-          if (fg) {
+          const fg = await fetchFearGreedDirect();
+          if (fg && fg.score != null) {
               setFearGreed({
                   score: Math.round(fg.score),
-                  rating: fg.rating,
-                  timestamp: fg.timestamp
+                  rating: fg.rating || (fg.score > 75 ? 'extreme greed' : fg.score > 55 ? 'greed' : fg.score > 45 ? 'neutral' : fg.score > 25 ? 'fear' : 'extreme fear'),
+                  timestamp: fg.timestamp || new Date().toISOString()
               });
           }
       } catch (e) {

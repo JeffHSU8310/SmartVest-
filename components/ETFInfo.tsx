@@ -252,12 +252,6 @@ const ETFInfo: React.FC<ETFInfoProps> = ({ stocks, techSettings, onUpdateTechSet
               if (res.data) {
                   apiData = res.data;
               }
-          } else {
-              const apiUrl = `/api/etf/holdings?symbol=${encodeURIComponent(symbol)}`;
-              res = await fetch(apiUrl);
-              if (res.ok) {
-                  apiData = await res.json();
-              }
           }
       } catch (e) {
           console.warn("Backend API not reachable. Falling back to client-side fetching.");
