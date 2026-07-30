@@ -47,26 +47,13 @@ export interface Stock {
   hidden?: boolean;
   currency?: 'TWD' | 'USD'; 
   accountId?: string;
-  // New fields for Dream Goals
-  expectedReturnRate?: number; // Annualized return rate (percentage)
-  targetYears?: number;        // Years to grow
-  annualInvestment?: number;   // Annual contribution (original currency)
   // New field for Monthly Goal
   monthlyTarget?: number;      // Monthly investment target amount
-  cheapPrice?: number;
-  fairPrice?: number;
-  expensivePrice?: number;
-  
-  isDynamicBalancing?: boolean;
-  isLongTerm?: boolean;
-  isShortTerm?: boolean;
+
   isTenX?: boolean;
-  isNova?: boolean;
-  novaPattern?: 'C1_BREAKOUT' | 'C2_READY' | 'C3_RETEST' | 'NONE';
-  strategySetupTime?: string;
 
   // Strategy Isolation
-  strategy?: 'DEFENSE' | 'TENX' | 'NOVA';
+  strategy?: 'TENX';
 
   // New fields for 10x Strategy
   isTenXCandidate?: boolean;
@@ -75,44 +62,7 @@ export interface Stock {
   tenXShares?: number;   // Added for independent stat tracking
   nav?: number; // 淨值
   
-  // Value Defense Strategy Fields
   strategyDate?: string;
-  defenseBuyPrice?: number | string;
-  defenseBuyFee?: number | string;
-  defenseBuySettlementDate?: string;
-  defenseStopLoss?: number | string;
-  defenseActualShares?: number | string;
-  defenseStatus?: 'active' | 'settled';
-  defenseRealizedPnL?: number | string;
-
-  // New defense sell tracking fields
-  defenseSellStopLossPrice?: number | string;
-  defenseSellStopLossDate?: string;
-  defenseSellStopLossShares?: number | string;
-  defenseSellStopLossSettlementDate?: string;
-  defenseSellStopLossFee?: number | string;
-  defenseSellStopLossTax?: number | string;
-
-  defenseSellSma20Price?: number | string;
-  defenseSellSma20Date?: string;
-  defenseSellSma20Shares?: number | string;
-  defenseSellSma20SettlementDate?: string;
-  defenseSellSma20Fee?: number | string;
-  defenseSellSma20Tax?: number | string;
-
-  defenseSellEma50Price?: number | string;
-  defenseSellEma50Date?: string;
-  defenseSellEma50Shares?: number | string;
-  defenseSellEma50SettlementDate?: string;
-  defenseSellEma50Fee?: number | string;
-  defenseSellEma50Tax?: number | string;
-
-  defenseSellEma100Price?: number | string;
-  defenseSellEma100Date?: string;
-  defenseSellEma100Shares?: number | string;
-  defenseSellEma100SettlementDate?: string;
-  defenseSellEma100Fee?: number | string;
-  defenseSellEma100Tax?: number | string;
 
   dcaDates?: number[];         // Legacy: Simple list (kept for backward compatibility)
   dcaSettings?: DCASetting[];  // New: Account-specific DCA dates
@@ -163,16 +113,9 @@ export interface Transaction {
   isDCA?: boolean;
   dcaOriginalDate?: string;
   isDRIP?: boolean;
-  isDynamicBalancing?: boolean;
-  isLongTerm?: boolean;
-  isShortTerm?: boolean;
   isTenX?: boolean;
   dividendAccountId?: string;
-  isNova?: boolean;
-  novaPattern?: 'C1_BREAKOUT' | 'C2_READY' | 'C3_RETEST' | 'NONE';
   tenXSubStrategy?: 'WEEKLY' | 'MONTHLY';
-  strategySetupTime?: string;
-  stopLossPrice?: number;
 }
 
 export type CashTransactionType = 'DEPOSIT' | 'WITHDRAWAL' | 'INTEREST' | 'ADJUSTMENT';
@@ -294,37 +237,6 @@ export interface GeneralAssetItem {
   loanType?: LoanType;
   targetStockId?: string;
   pledgeLots?: number;
-}
-
-export interface ETFHolding {
-  symbol?: string;
-  name: string;
-  weight: number; // percentage
-  shares?: number;
-  value?: number;
-  sector?: string;
-}
-
-export interface ETFDetails {
-  ticker: string;
-  name: string;
-  updatedAt: string;
-  holdings: ETFHolding[];
-  category?: string;
-  description?: string;
-  expenseRatio?: number;
-  yield?: number;
-}
-
-export interface NovaWatchlistItem {
-  id: string;
-  symbol: string;
-  name: string;      // 股票名稱
-  dateAdded: string; // 選入時間
-  rangeHigh: number; // 區間高點股價
-  rangeLow: number;  // 區間低點股價
-  pattern: 'C1_BREAKOUT' | 'C2_READY' | 'C3_RETEST' | string; // 目前型態
-  note?: string;     // 備註
 }
 
 export interface CSVSettings {

@@ -74,7 +74,7 @@ interface TenXMarketStrategyProps {
   onUpdateSuggestedCategories?: (categories: string[]) => void;
   stockOrder?: string[];
   onUpdateOrder?: (order: string[]) => void;
-  strategyType?: 'DEFENSE' | 'NOVA' | 'TENX';
+  strategyType?: 'TENX';
 }
 
 const TenXMarketStrategy: React.FC<TenXMarketStrategyProps> = ({

@@ -8,7 +8,7 @@ interface QuickAddStockModalProps {
   onAddStock: (stock: Stock) => void;
   marketFilter?: MarketFilter;
   suggestedCategory?: string;
-  strategy?: 'DEFENSE' | 'NOVA' | 'TENX';
+  strategy?: 'TENX';
 }
 
 const QuickAddStockModal: React.FC<QuickAddStockModalProps> = ({
@@ -99,8 +99,6 @@ const QuickAddStockModal: React.FC<QuickAddStockModalProps> = ({
       market: stockMarket,
       currency: currency,
       strategy: strategy, 
-      ...(strategy === 'DEFENSE' && { isDynamicBalancing: true }),
-      ...(strategy === 'NOVA' && { isNova: true }),
       ...(strategy === 'TENX' && { isTenX: true })
     });
     onClose();

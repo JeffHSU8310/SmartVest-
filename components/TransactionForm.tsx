@@ -16,7 +16,6 @@ interface Props {
   initialData?: Transaction | null;
   defaultStockId?: string | null;
   defaultAccountId?: string | null;
-  defaultStrategy?: string | null;
 }
 
 const toInputDate = (str: string | undefined): string => {
@@ -190,7 +189,7 @@ const CalculatorPopup = ({
     );
 };
 
-const TransactionForm: React.FC<Props> = ({ stocks, accounts, transactions, marketFilter, onSave, onSaveMany, onCancel, initialData, defaultStockId, defaultAccountId, defaultStrategy }) => {
+const TransactionForm: React.FC<Props> = ({ stocks, accounts, transactions, marketFilter, onSave, onSaveMany, onCancel, initialData, defaultStockId, defaultAccountId }) => {
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   const [settlementDate, setSettlementDate] = useState('');
   const [stockId, setStockId] = useState('');
@@ -217,33 +216,8 @@ const TransactionForm: React.FC<Props> = ({ stocks, accounts, transactions, mark
 
   const [isDCA, setIsDCA] = useState(false);
   const [isDRIP, setIsDRIP] = useState(false);
-  const [isDynamicBalancing, setIsDynamicBalancing] = useState(false);
-  const [isLongTerm, setIsLongTerm] = useState(false);
-  const [isShortTerm, setIsShortTerm] = useState(false);
   const [isTenX, setIsTenX] = useState(false);
-  const [isNova, setIsNova] = useState(false);
-  const [novaPattern, setNovaPattern] = useState<'C1_BREAKOUT' | 'C2_READY' | 'C3_RETEST' | 'NONE'>('NONE');
   const [tenXSubStrategy, setTenXSubStrategy] = useState<'WEEKLY' | 'MONTHLY' | undefined>(undefined);
-  const [stopLossPrice, setStopLossPrice] = useState('');
-  const [strategySetupTime, setStrategySetupTime] = useState('');
-
-  const riskCapital = useMemo(() => {
-    const totalKey = isNova ? 'nova_total_capital' : 'defense_total_capital';
-    const factorKey = isNova ? 'nova_risk_factor' : 'defense_risk_factor';
-    const total = parseFloat(localStorage.getItem(totalKey) || '700000');
-    const factor = parseFloat(localStorage.getItem(factorKey) || '1.0');
-    return total * (factor / 100);
-  }, [isNova]);
-
-  const recommendedShares = useMemo(() => {
-    const buyP = parseFloat(inputPrice) || 0;
-    const stopP = parseFloat(stopLossPrice) || 0;
-    const risk = buyP - stopP;
-    if (risk > 0) {
-      return Math.floor(riskCapital / risk);
-    }
-    return 0;
-  }, [inputPrice, stopLossPrice, riskCapital]);
 
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const isDragging = useRef(false);
@@ -311,20 +285,15 @@ const TransactionForm: React.FC<Props> = ({ stocks, accounts, transactions, mark
     if (type === TransactionType.BUY || !accountId) {
       filtered = marketStocks.filter(s => {
           const isStockTenX = s.isTenX || s.strategy === 'TENX' || (s.category && s.category.includes('十倍大盤')) || s.isTenXCandidate;
-          const isStockDefense = s.isDynamicBalancing || s.strategy === 'DEFENSE' || (s.category && s.category.includes('動態平衡'));
-          const isStockNova = s.isNova || s.strategy === 'NOVA' || (s.category && s.category.includes('Nova'));
 
           if (initialData && s.id === initialData.stockId) return true;
           if (defaultStockId && s.id === defaultStockId) return true;
 
-          if (isStockTenX || isStockDefense || isStockNova) {
-              if (isTenX && isStockTenX) return true;
-              if (isDynamicBalancing && isStockDefense) return true;
-              if (isNova && isStockNova) return true;
-              return false;
+          if (isStockTenX) {
+              return !!isTenX;
           }
 
-          if (isTenX || isDynamicBalancing || isNova) {
+          if (isTenX) {
               return false; 
           }
 
@@ -348,17 +317,12 @@ const TransactionForm: React.FC<Props> = ({ stocks, accounts, transactions, mark
           if (defaultStockId && s.id === defaultStockId) return true;
 
           const isStockTenX = s.isTenX || s.strategy === 'TENX' || (s.category && s.category.includes('十倍大盤')) || s.isTenXCandidate;
-          const isStockDefense = s.isDynamicBalancing || s.strategy === 'DEFENSE' || (s.category && s.category.includes('動態平衡'));
-          const isStockNova = s.isNova || s.strategy === 'NOVA' || (s.category && s.category.includes('Nova'));
 
-          if (isTenX || isDynamicBalancing || isNova) {
-              if (isTenX && isStockTenX) return true;
-              if (isDynamicBalancing && isStockDefense) return true;
-              if (isNova && isStockNova) return true;
-              return false;
+          if (isTenX) {
+              return !!isStockTenX;
           }
 
-          if (isStockTenX || isStockDefense || isStockNova) {
+          if (isStockTenX) {
               return false;
           }
 
@@ -370,7 +334,7 @@ const TransactionForm: React.FC<Props> = ({ stocks, accounts, transactions, mark
         if (a.hidden !== b.hidden) return a.hidden ? 1 : -1;
         return a.ticker.localeCompare(b.ticker);
     });
-  }, [stocks, transactions, marketFilter, type, accountId, initialData, isTenX, isDynamicBalancing, isNova, defaultStockId]);
+  }, [stocks, transactions, marketFilter, type, accountId, initialData, isTenX, defaultStockId]);
 
   const selectedStock = stocks.find(s => s.id === stockId);
   const selectedAccount = accounts.find(a => a.id === accountId);
@@ -383,32 +347,10 @@ const TransactionForm: React.FC<Props> = ({ stocks, accounts, transactions, mark
   // Treatments as USD transaction if Market is US OR Currency is explicitly set to USD
   const isUSStock = selectedStock?.market === Market.US || selectedStock?.currency === 'USD';
 
-  const novaAccount = securitiesAccounts.find(a => a.name.toLowerCase().includes('nova') || a.name.includes('Nova策略') || a.name.includes('NOVA'));
-  const defenseAccount = securitiesAccounts.find(a => a.name.includes('動態平衡'));
-
   // Initialize form
   useEffect(() => {
-    if (initialData) return;
-    if (isNova && novaAccount && accountId !== novaAccount.id) {
-        setAccountId(novaAccount.id);
-    } else if (isDynamicBalancing && defenseAccount && accountId !== defenseAccount.id) {
-        setAccountId(defenseAccount.id);
-    }
-  }, [isNova, isDynamicBalancing, novaAccount, defenseAccount, initialData, accountId]);
-
-  useEffect(() => {
     if (!initialData) {
-        if (defaultStrategy === 'NOVA') {
-            setIsNova(true);
-            const account = securitiesAccounts.find(a => a.name.toLowerCase().includes('nova'));
-            if (account) setAccountId(account.id);
-            else if (defaultAccountId) setAccountId(defaultAccountId);
-        } else if (defaultStrategy === 'DEFENSE') {
-            setIsDynamicBalancing(true);
-            const account = securitiesAccounts.find(a => a.name.includes('動態平衡'));
-            if (account) setAccountId(account.id);
-            else if (defaultAccountId) setAccountId(defaultAccountId);
-        } else if (defaultAccountId) {
+        if (defaultAccountId) {
             setAccountId(defaultAccountId);
         } else if (!accountId && securitiesAccounts.length > 0) {
             setAccountId(securitiesAccounts[0].id);
@@ -417,7 +359,7 @@ const TransactionForm: React.FC<Props> = ({ stocks, accounts, transactions, mark
         // Default settlement date for new transactions
         setSettlementDate(addBusinessDays(date, 2));
     }
-  }, [securitiesAccounts, initialData, defaultAccountId, defaultStrategy]);
+  }, [securitiesAccounts, initialData, defaultAccountId]);
 
   useEffect(() => {
     // If we are initializing an edit, do not auto select here. That is handled by initializedTxId logic.
@@ -507,34 +449,10 @@ const TransactionForm: React.FC<Props> = ({ stocks, accounts, transactions, mark
       setNote(initialData.note || '');
       setIsDCA(!!initialData.isDCA);
       setIsDRIP(!!initialData.isDRIP);
-      setIsDynamicBalancing(!!initialData.isDynamicBalancing);
-      setIsLongTerm(!!initialData.isLongTerm);
-      setIsShortTerm(!!initialData.isShortTerm);
       setIsTenX(!!initialData.isTenX);
-      setIsNova(!!initialData.isNova);
-      setNovaPattern(initialData.novaPattern || 'NONE');
       setTenXSubStrategy(initialData.tenXSubStrategy);
-      setStrategySetupTime(initialData.strategySetupTime || '');
-      if (initialData.stopLossPrice !== undefined) {
-        setStopLossPrice(initialData.stopLossPrice.toString());
-      } else if (initialData.stockId) {
-        const stock = stocks.find(s => s.id === initialData.stockId);
-        if (stock?.defenseStopLoss) {
-          setStopLossPrice(stock.defenseStopLoss.toString());
-        }
-      }
     }
   }, [initialData, stocks]);
-
-  useEffect(() => {
-    // When there is no valid edit target, and user selects a stock, default the strategy properties
-    if (!initialData && selectedStock) {
-      if (selectedStock.defenseStopLoss) {
-        setStopLossPrice(selectedStock.defenseStopLoss.toString());
-      }
-      setStrategySetupTime(selectedStock.strategySetupTime || '');
-    }
-  }, [selectedStock, initialData]);
 
   const handleDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
       userInteracted.current = true;
@@ -592,70 +510,6 @@ const TransactionForm: React.FC<Props> = ({ stocks, accounts, transactions, mark
        }
     }
   }, [stockId]);
-
-  useEffect(() => {
-    if (initialData) return;
-    if (type !== TransactionType.SELL) return;
-    if (!selectedStock) return;
-    
-    if (isDynamicBalancing || isNova) {
-      if (selectedStock.currentPrice !== undefined) {
-        const currentPrice = Number(selectedStock.currentPrice);
-        const triggers: string[] = [];
-
-        // 1. Check Stop Loss
-        if (selectedStock.defenseStopLoss && currentPrice <= Number(selectedStock.defenseStopLoss)) {
-            triggers.push('(止損)');
-        } 
-        // 2. Check SMA20
-        if (!selectedStock.defenseSellSma20Price && selectedStock.sma20 && currentPrice < selectedStock.sma20) {
-            triggers.push('(SMA20)');
-        }
-        // 3. Check EMA50
-        if (!selectedStock.defenseSellEma50Price && selectedStock.ema50 && currentPrice < selectedStock.ema50) {
-            triggers.push('(EMA50)');
-        }
-        // 4. Check EMA100
-        if (!selectedStock.defenseSellEma100Price && selectedStock.ema100 && currentPrice < selectedStock.ema100) {
-            triggers.push('(EMA100)');
-        }
-        // 5. Check 40Day
-        if (selectedStock.strategyDate && selectedStock.defenseBuyPrice) {
-            const buyPrice = Number(selectedStock.defenseBuyPrice);
-            if (buyPrice > 0) {
-                const tradingDays = getTradingDaysCount(selectedStock.strategyDate);
-                const profitPerc = (currentPrice - buyPrice) / buyPrice;
-                if (tradingDays >= 40 && profitPerc < 0.20) {
-                    triggers.push('(40Day)');
-                }
-            }
-        }
-
-        if (triggers.length > 0) {
-            setNote(prev => {
-                const baseNote = prev.replace(/\((止損|SMA20|EMA50|EMA100|40Day)\)/g, '').trim();
-                return `${baseNote} ${triggers.join(' ')}`.trim();
-            });
-
-            // Automatically fill suggested quantity
-            const initialShares = Number(selectedStock.defenseActualShares) || 0;
-            if (triggers.includes('(止損)') || triggers.includes('(40Day)')) {
-                if (currentInventoryShares > 0) {
-                    setQuantity(currentInventoryShares.toString());
-                }
-            } else {
-                let suggestedQty = 0;
-                if (triggers.includes('(SMA20)')) suggestedQty += Math.round(initialShares * 0.25);
-                if (triggers.includes('(EMA50)')) suggestedQty += Math.round(initialShares * 0.50);
-                if (triggers.includes('(EMA100)')) suggestedQty += Math.round(initialShares * 0.25);
-                if (suggestedQty > 0) {
-                    setQuantity(suggestedQty.toString());
-                }
-            }
-        }
-      }
-    }
-  }, [stockId, type, isDynamicBalancing, isNova, selectedStock, initialData, currentInventoryShares]);
 
   useEffect(() => {
     if (type === TransactionType.DIVIDEND) {
@@ -863,15 +717,6 @@ const TransactionForm: React.FC<Props> = ({ stocks, accounts, transactions, mark
     if (type === TransactionType.DIVIDEND) savePrice = parseFloat(dividendPerShare) || 0;
 
     let finalNote = note;
-    if (isDynamicBalancing && !finalNote.includes('【動態平衡策略】')) {
-        finalNote = `【動態平衡策略】${finalNote}`;
-    }
-    if (isLongTerm && !finalNote.includes('【長期】')) {
-        finalNote = `【長期】${finalNote}`;
-    }
-    if (isShortTerm && !finalNote.includes('【短期】')) {
-        finalNote = `【短期】${finalNote}`;
-    }
     if (isTenX) {
         if (tenXSubStrategy === 'WEEKLY' && !finalNote.includes('【十倍大盤-週策略】')) {
             finalNote = finalNote.replace('【十倍大盤策略】', '');
@@ -882,9 +727,6 @@ const TransactionForm: React.FC<Props> = ({ stocks, accounts, transactions, mark
         } else if (!finalNote.includes('【十倍大盤策略】') && !finalNote.includes('【十倍大盤-週策略】') && !finalNote.includes('【十倍大盤-月策略】')) {
             finalNote = `【十倍大盤策略】${finalNote}`;
         }
-    }
-    if (isNova && !finalNote.includes('【Nova策略】')) {
-        finalNote = `【Nova策略】${finalNote}`;
     }
 
     onSave({
@@ -902,16 +744,9 @@ const TransactionForm: React.FC<Props> = ({ stocks, accounts, transactions, mark
       isDCA: type === TransactionType.BUY ? isDCA : undefined,
       dcaOriginalDate: type === TransactionType.BUY && isDCA ? (initialData?.dcaOriginalDate || initialData?.date) : undefined,
       isDRIP: type === TransactionType.BUY ? isDRIP : undefined,
-      isDynamicBalancing: isDynamicBalancing,
-      isLongTerm: isLongTerm,
-      isShortTerm: isShortTerm,
       isTenX: isTenX,
       dividendAccountId: type === TransactionType.DIVIDEND && dividendAccountId !== '' ? dividendAccountId : undefined,
-      isNova: isNova,
-      novaPattern: (isNova && type === TransactionType.BUY) ? novaPattern : undefined,
       tenXSubStrategy: (isTenX && type === TransactionType.BUY) ? tenXSubStrategy : undefined,
-      strategySetupTime: ((isDynamicBalancing || isNova) && type === TransactionType.BUY) ? strategySetupTime : undefined,
-      stopLossPrice: ((isDynamicBalancing || isNova) && type === TransactionType.BUY) ? parseFloat(stopLossPrice) : undefined,
     });
   };
 
@@ -950,7 +785,7 @@ const TransactionForm: React.FC<Props> = ({ stocks, accounts, transactions, mark
 
   // Check if stock selection should be locked (pre-filled from card and not editing)
   const isStockLocked = !!defaultStockId && !initialData;
-  const isAccountLocked = (!!defaultAccountId && !initialData) || (isNova && !!novaAccount) || (isDynamicBalancing && !!defenseAccount);
+  const isAccountLocked = !!defaultAccountId && !initialData;
 
   return (
     <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-50 p-4 backdrop-blur-sm transition-all duration-300">
@@ -1065,7 +900,7 @@ const TransactionForm: React.FC<Props> = ({ stocks, accounts, transactions, mark
                   </select>
                 )}
                 {selectedStock && selectedStock.currentPrice !== undefined && (
-                  <div className={`mt-2 text-xs px-3 py-2 border rounded-lg flex items-center justify-between font-bold animate-in fade-in slide-in-from-top-1 ${isDynamicBalancing ? 'text-indigo-700 bg-indigo-50/80 border-indigo-200/60' : isNova ? 'text-fuchsia-700 bg-fuchsia-50/80 border-fuchsia-200/60' : isTenX ? 'text-amber-700 bg-amber-50/80 border-amber-200/60' : 'text-slate-700 bg-slate-50/80 border-slate-200/60'}`}>
+                  <div className={`mt-2 text-xs px-3 py-2 border rounded-lg flex items-center justify-between font-bold animate-in fade-in slide-in-from-top-1 ${isTenX ? 'text-amber-700 bg-amber-50/80 border-amber-200/60' : 'text-slate-700 bg-slate-50/80 border-slate-200/60'}`}>
                      <span className="flex items-center gap-1.5"><TrendingUp size={14}/> 最新收盤價</span>
                      <span className="font-mono text-sm">${selectedStock.currentPrice.toFixed(2)} {selectedStock.currency || (selectedStock.market === Market.US ? 'USD' : 'TWD')}</span>
                   </div>
@@ -1379,15 +1214,6 @@ const TransactionForm: React.FC<Props> = ({ stocks, accounts, transactions, mark
                   </label>
                  </>
                )}
-               <label className="flex items-center gap-2.5 text-xs text-indigo-700 font-bold cursor-pointer select-none hover:bg-white px-2 py-1 rounded transition-colors">
-                  <input 
-                    type="checkbox" 
-                    checked={isDynamicBalancing} 
-                    onChange={e => setIsDynamicBalancing(e.target.checked)} 
-                    className="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500 border-slate-300 accent-indigo-600" 
-                  />
-                  動態平衡策略
-               </label>
                <label className="flex items-center gap-2.5 text-xs text-amber-700 font-bold cursor-pointer select-none hover:bg-white px-2 py-1 rounded transition-colors">
                   <input 
                     type="checkbox" 
@@ -1396,15 +1222,6 @@ const TransactionForm: React.FC<Props> = ({ stocks, accounts, transactions, mark
                     className="w-4 h-4 text-amber-600 rounded focus:ring-amber-500 border-slate-300 accent-amber-600" 
                   />
                   十倍大盤策略
-               </label>
-               <label className="flex items-center gap-2.5 text-xs text-fuchsia-700 font-bold cursor-pointer select-none hover:bg-white px-2 py-1 rounded transition-colors">
-                  <input 
-                    type="checkbox" 
-                    checked={isNova} 
-                    onChange={e => setIsNova(e.target.checked)} 
-                    className="w-4 h-4 text-fuchsia-600 rounded focus:ring-fuchsia-500 border-slate-300 accent-fuchsia-600" 
-                  />
-                  Nova策略
                </label>
             </div>
 
@@ -1419,155 +1236,6 @@ const TransactionForm: React.FC<Props> = ({ stocks, accounts, transactions, mark
                    <span className="font-medium">月策略</span>
                  </label>
                </div>
-            )}
-
-            {(isDynamicBalancing || isNova) && type === TransactionType.BUY && (
-              <div className={`space-y-4 p-4 rounded-2xl border animate-in fade-in slide-in-from-top-4 ${isNova ? 'bg-fuchsia-50/50 border-fuchsia-100' : 'bg-indigo-50/50 border-indigo-100'}`}>
-                <div className="flex items-center justify-between">
-                  <h4 className={`text-xs font-black uppercase tracking-widest flex items-center gap-2 ${isNova ? 'text-fuchsia-600' : 'text-indigo-600'}`}>
-                    <TrendingDown size={14} /> 策略風險配置
-                  </h4>
-                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${isNova ? 'bg-fuchsia-100 text-fuchsia-600' : 'bg-indigo-100 text-indigo-600'}`}>Risk Capital: ${Math.round(riskCapital).toLocaleString()}</span>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                   <div className="space-y-1.5">
-                      <label className={`block text-xs font-bold uppercase tracking-wide ${isNova ? 'text-fuchsia-500' : 'text-indigo-500'}`}>設定止損價</label>
-                      <div className="relative">
-                        <input 
-                          type="number" step="0.01" 
-                          value={stopLossPrice} 
-                          onChange={e => { userInteracted.current = true; setStopLossPrice(e.target.value); }} 
-                          className={`w-full pl-4 pr-10 py-2.5 bg-white border rounded-xl outline-none focus:ring-2 transition-all font-mono font-bold text-slate-800 ${isNova ? 'border-fuchsia-200 focus:ring-fuchsia-400' : 'border-indigo-200 focus:ring-indigo-400'}`} 
-                          placeholder="0.00"
-                        />
-                        <button type="button" onClick={() => openCalculator('tax', '設定止損價', stopLossPrice)} className={`absolute right-3 top-1/2 -translate-y-1/2 hover:text-indigo-500 ${isNova ? 'text-fuchsia-300' : 'text-indigo-300'}`}>
-                           <Calculator size={16} />
-                        </button>
-                      </div>
-                   </div>
-                   <div className="space-y-1.5">
-                      <label className={`block text-xs font-bold uppercase tracking-wide ${isNova ? 'text-fuchsia-500' : 'text-indigo-500'}`}>策略成立日期</label>
-                      <input 
-                        type="date" 
-                        value={strategySetupTime} 
-                        onChange={e => setStrategySetupTime(e.target.value)} 
-                        className={`w-full px-4 py-2.5 bg-white border rounded-xl outline-none focus:ring-2 transition-all font-mono font-bold text-slate-800 ${isNova ? 'border-fuchsia-200 focus:ring-fuchsia-400' : 'border-indigo-200 focus:ring-indigo-400'}`} 
-                      />
-                   </div>
-                   <div className={`space-y-3 col-span-2 py-2 border-t mt-2 ${isNova ? 'border-fuchsia-100' : 'border-indigo-100'}`}>
-                      <label className={`block text-xs font-bold uppercase tracking-wide ${isNova ? 'text-fuchsia-500' : 'text-indigo-500'}`}>部位策略分類</label>
-                      <div className="flex flex-col gap-3">
-                        {isDynamicBalancing && (
-                          <div className="flex gap-4">
-                            <label className="flex items-center gap-2 text-sm font-bold text-slate-700 cursor-pointer">
-                              <input 
-                                type="checkbox" 
-                                checked={isLongTerm} 
-                                onChange={e => {
-                                  setIsLongTerm(e.target.checked);
-                                  if (e.target.checked) setIsShortTerm(false);
-                                }} 
-                                className="w-4 h-4 text-indigo-600 rounded border-slate-300 focus:ring-indigo-500"
-                              />
-                              長期 (動態平衡)
-                            </label>
-                            <label className="flex items-center gap-2 text-sm font-bold text-slate-700 cursor-pointer">
-                              <input 
-                                type="checkbox" 
-                                checked={isShortTerm} 
-                                onChange={e => {
-                                  setIsShortTerm(e.target.checked);
-                                  if (e.target.checked) setIsLongTerm(false);
-                                }} 
-                                className="w-4 h-4 text-indigo-600 rounded border-slate-300 focus:ring-indigo-500"
-                              />
-                              短期 (動態平衡)
-                            </label>
-                          </div>
-                        )}
-                        
-                        {isNova && (
-                          <div className="flex flex-col gap-2">
-                             <label className="flex items-center gap-2 text-sm font-bold text-slate-700 cursor-pointer">
-                                <input type="radio" checked={novaPattern === 'C1_BREAKOUT'} onChange={() => setNovaPattern('C1_BREAKOUT')} className="w-4 h-4 text-fuchsia-600 accent-fuchsia-600 focus:ring-fuchsia-500" /> 
-                                已突破高點
-                             </label>
-                             <label className="flex items-center gap-2 text-sm font-bold text-slate-700 cursor-pointer">
-                                <input type="radio" checked={novaPattern === 'C2_READY'} onChange={() => setNovaPattern('C2_READY')} className="w-4 h-4 text-fuchsia-600 accent-fuchsia-600 focus:ring-fuchsia-500" /> 
-                                準備突破高點
-                             </label>
-                             <label className="flex items-center gap-2 text-sm font-bold text-slate-700 cursor-pointer">
-                                <input type="radio" checked={novaPattern === 'C3_RETEST'} onChange={() => setNovaPattern('C3_RETEST')} className="w-4 h-4 text-fuchsia-600 accent-fuchsia-600 focus:ring-fuchsia-500" /> 
-                                突破後回測再突破
-                             </label>
-                          </div>
-                        )}
-                      </div>
-                   </div>
-                   <div className="space-y-1.5 col-span-2">
-                      <label className="block text-xs font-bold text-indigo-500 uppercase tracking-wide">建議購買股數</label>
-                      <div className="w-full px-4 py-2.5 bg-indigo-100/50 border border-indigo-200 rounded-xl font-mono font-black text-indigo-700 flex items-center justify-between">
-                         {recommendedShares.toLocaleString()}
-                         <button 
-                            type="button" 
-                            onClick={() => setQuantity(recommendedShares.toString())}
-                            className="text-[10px] bg-indigo-600 text-white px-2 py-1 rounded hover:bg-indigo-700 transition-colors"
-                         >
-                            填入
-                         </button>
-                      </div>
-                   </div>
-                </div>
-              </div>
-            )}
-
-            {(isDynamicBalancing || isNova) && (
-              <div className="space-y-1.5 p-3 bg-indigo-50/50 rounded-xl border border-indigo-100 animate-in slide-in-from-top-2">
-                <label className="block text-[10px] font-black text-indigo-400 uppercase tracking-wider">
-                   {isNova && !isDynamicBalancing ? 'Nova策略動作' : (isDynamicBalancing && !isNova ? '動態平衡策略動作' : '策略動作')}
-                </label>
-                <div className="flex flex-wrap gap-2">
-                  {[
-                    { label: '一般買賣', value: '' },
-                    { label: '止損出場', value: '(止損)' },
-                    { label: 'SMA20 減碼', value: '(SMA20)' },
-                    { label: 'EMA50 減碼', value: '(EMA50)' },
-                    { label: 'EMA100 減碼', value: '(EMA100)' },
-                    { label: '40Day出場', value: '(40Day)' }
-                  ].map(opt => (
-                    <button
-                      key={opt.label}
-                      type="button"
-                      onClick={() => {
-                        const baseNote = note.replace(/\((止損|SMA20|EMA50|EMA100|40Day)\)/g, '').trim();
-                        setNote(`${baseNote} ${opt.value}`.trim());
-                        
-                        if (type === TransactionType.SELL && selectedStock) {
-                            const initialShares = Number(selectedStock.defenseActualShares) || 0;
-                            if (opt.value === '(止損)' || opt.value === '(40Day)') {
-                                if (currentInventoryShares > 0) {
-                                    setQuantity(currentInventoryShares.toString());
-                                }
-                            } else if (opt.value === '(SMA20)') {
-                                setQuantity(Math.round(initialShares * 0.25).toString());
-                            } else if (opt.value === '(EMA50)') {
-                                setQuantity(Math.round(initialShares * 0.50).toString());
-                            } else if (opt.value === '(EMA100)') {
-                                setQuantity(Math.round(initialShares * 0.25).toString());
-                            }
-                        }
-                      }}
-                      className={`px-3 py-1.5 text-[11px] font-bold rounded-lg transition-all ${
-                        note.includes(opt.value) && opt.value !== '' 
-                        ? 'bg-indigo-600 text-white shadow-md' 
-                        : (opt.value === '' && !note.match(/\((止損|SMA20|EMA50|EMA100|40Day)\)/) ? 'bg-indigo-600 text-white shadow-md' : 'bg-white text-indigo-600 border border-indigo-200 hover:border-indigo-400')
-                      }`}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
             )}
 
             <div className="space-y-1.5">

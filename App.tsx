@@ -20,7 +20,6 @@ import {
   RecurringCashRule,
   StockPerformanceRecord,
   BudgetItem,
-  NovaWatchlistItem,
 } from "./types";
 import {
   calculatePortfolio,
@@ -46,10 +45,7 @@ import GeneralAssetOverview from "./components/GeneralAssetOverview";
 import HouseholdExpenses from "./components/HouseholdExpenses";
 import MarketMonitor from "./components/MarketMonitor";
 import BudgetOverview from "./components/BudgetOverview";
-import DreamGoals from "./components/DreamGoals";
-import ValueDefenseTable from "./components/ValueDefenseTable";
 import TenXMarketStrategy from "./components/TenXMarketStrategy";
-import ETFInfo from "./components/ETFInfo";
 import {
   LayoutDashboard,
   List,
@@ -68,11 +64,7 @@ import {
   ArrowRight,
   HelpCircle,
   Table2,
-  Rocket,
-  Shield,
   Target,
-  Layers,
-  Crosshair,
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
@@ -174,35 +166,17 @@ const NAV_ITEMS = [
   { id: "market", label: "趨勢分析", icon: CandlestickChart },
   { id: "overview", label: "總體資產概況", icon: PieChart },
   { id: "dashboard", label: "(股)資產總覽", icon: LayoutDashboard },
-  { id: "etf_info", label: "庫存ETF資訊", icon: Layers },
   { id: "trend", label: "報酬走勢", icon: TrendingUp },
   { id: "transactions", label: "(股)交易明細", icon: List },
   { id: "stocks", label: "股票管理", icon: Settings },
-  { id: "defense", label: "動態平衡策略", icon: Shield },
   { id: "tenx", label: "十倍大盤策略", icon: Target },
   { id: "accounts", label: "帳戶管理", icon: Wallet },
   { id: "budget", label: "基本收支總表", icon: Table2 },
   { id: "expenses", label: "家用記帳", icon: ShoppingBag },
-  { id: "dream", label: "夢想目標", icon: Rocket },
   { id: "settings", label: "檔案存取", icon: FileJson },
 ];
 
-import NovaStrategy from "./components/NovaStrategy";
-import StockScreener from "./components/StockScreener";
-import { Database } from "lucide-react";
 import { useAutoDCA } from "./hooks/useAutoDCA";
-
-// 添加 Nova 策略到導覽列
-NAV_ITEMS.splice(
-  NAV_ITEMS.findIndex((i) => i.id === "accounts"),
-  0,
-  { id: "nova", label: "Nova策略", icon: Crosshair },
-);
-NAV_ITEMS.splice(
-  NAV_ITEMS.findIndex((i) => i.id === "accounts"),
-  0,
-  { id: "screener", label: "選股池", icon: Database },
-);
 
 const WelcomeScreen = ({
   onLogin,
@@ -371,12 +345,7 @@ function App() {
     | "settings"
     | "expenses"
     | "budget"
-    | "dream"
-    | "defense"
     | "tenx"
-    | "etf_info"
-    | "nova"
-    | "screener"
   >("overview");
 
   const [isAppUnlocked, setIsAppUnlocked] = useState(false);
@@ -407,7 +376,6 @@ function App() {
   const [performanceRecords, setPerformanceRecords] = useState<
     StockPerformanceRecord[]
   >([]);
-  const [novaWatchlist, setNovaWatchlist] = useState<NovaWatchlistItem[]>([]);
 
   // New State for Budget
   const [budgetItems, setBudgetItems] = useState<BudgetItem[]>([]);
@@ -477,7 +445,6 @@ function App() {
   const [editingTx, setEditingTx] = useState<Transaction | null>(null);
   const [prefillStockId, setPrefillStockId] = useState<string | null>(null);
   const [prefillAccountId, setPrefillAccountId] = useState<string | null>(null);
-  const [prefillStrategy, setPrefillStrategy] = useState<string | null>(null);
 
   const [isUpdatingPrices, setIsUpdatingPrices] = useState(false);
   const [fileHandle, setFileHandle] = useState<any>(null);
@@ -1102,7 +1069,6 @@ function App() {
       recoveryKey,
       customCategories,
       tenxStrategyConfig,
-      novaWatchlist,
     }),
     [
       stocks,
@@ -1126,7 +1092,6 @@ function App() {
       recoveryKey,
       customCategories,
       tenxStrategyConfig,
-      novaWatchlist,
     ],
   );
 
@@ -1191,7 +1156,6 @@ function App() {
     isDesktopMode,
     isMobileMode,
     getExportData,
-    novaWatchlist,
   ]);
 
   // ... (loadData, handleUpdateStock, etc. remain the same) ...
@@ -1215,7 +1179,6 @@ function App() {
     if (data.exchangeRate) setExchangeRate(data.exchangeRate);
     if (data.customCategories) setCustomCategories(data.customCategories);
     if (data.tenxStrategyConfig) setTenxStrategyConfig(data.tenxStrategyConfig);
-    if (data.novaWatchlist) setNovaWatchlist(data.novaWatchlist);
     if (data.appTitle) setAppTitle(data.appTitle);
     if (data.autoSyncStartDate) setAutoSyncStartDate(data.autoSyncStartDate);
     if (data.appPassword) {
@@ -1595,66 +1558,15 @@ function App() {
           syncCashTransaction(tx, account, stock, true);
         }
 
-        if (stock && (tx.isDynamicBalancing || tx.isTenX)) {
+        if (stock && tx.isTenX) {
           setStocks((prev) =>
             prev.map((s) => {
               if (s.id !== stock.id) return s;
               let updated = { ...s };
 
               if (tx.type === TransactionType.BUY) {
-                if (tx.isDynamicBalancing) {
-                  updated.defenseBuyPrice = undefined;
-                  updated.defenseActualShares = 0;
-                  updated.defenseStatus = undefined;
-                  updated.strategyDate = undefined;
-                  updated.defenseStopLoss = undefined;
-                  updated.defenseSellSma20Shares = 0;
-                  updated.defenseSellEma50Shares = 0;
-                  updated.defenseSellEma100Shares = 0;
-                }
-                if (tx.isTenX) {
-                  updated.tenXBuyPrice = undefined;
-                  updated.tenXShares = 0;
-                }
-              } else if (tx.type === TransactionType.SELL) {
-                if (tx.isDynamicBalancing) {
-                  const note = (tx.note || "").toUpperCase();
-                  if (
-                    note.includes("止損") ||
-                    note.includes("STOP LOSS") ||
-                    note.includes("EXIT")
-                  ) {
-                    updated.defenseSellStopLossPrice = undefined;
-                    updated.defenseSellStopLossShares = 0;
-                    updated.defenseSellStopLossDate = undefined;
-                    updated.defenseSellStopLossFee = undefined;
-                    updated.defenseSellStopLossTax = undefined;
-                  } else if (note.includes("SMA20")) {
-                    updated.defenseSellSma20Price = undefined;
-                    updated.defenseSellSma20Shares = Math.round(
-                      Number(s.defenseActualShares || 0) * 0.25,
-                    );
-                    updated.defenseSellSma20Date = undefined;
-                    updated.defenseSellSma20Fee = undefined;
-                    updated.defenseSellSma20Tax = undefined;
-                  } else if (note.includes("EMA50")) {
-                    updated.defenseSellEma50Price = undefined;
-                    updated.defenseSellEma50Shares = Math.round(
-                      Number(s.defenseActualShares || 0) * 0.5,
-                    );
-                    updated.defenseSellEma50Date = undefined;
-                    updated.defenseSellEma50Fee = undefined;
-                    updated.defenseSellEma50Tax = undefined;
-                  } else if (note.includes("EMA100")) {
-                    updated.defenseSellEma100Price = undefined;
-                    updated.defenseSellEma100Shares = Math.round(
-                      Number(s.defenseActualShares || 0) * 0.25,
-                    );
-                    updated.defenseSellEma100Date = undefined;
-                    updated.defenseSellEma100Fee = undefined;
-                    updated.defenseSellEma100Tax = undefined;
-                  }
-                }
+                updated.tenXBuyPrice = undefined;
+                updated.tenXShares = 0;
               }
               return updated;
             }),
@@ -1714,14 +1626,7 @@ function App() {
 
       // Update stock strategy flags if changed in transaction
       if (stock) {
-        const needsStockUpdate =
-          tx.isDynamicBalancing ||
-          tx.isTenX ||
-          tx.isNova ||
-          (editingTx &&
-            (editingTx.isDynamicBalancing ||
-              editingTx.isTenX ||
-              editingTx.isNova));
+        const needsStockUpdate = tx.isTenX || (editingTx && editingTx.isTenX);
 
         if (needsStockUpdate && stock) {
           setStocks((prev) =>
@@ -1730,21 +1635,8 @@ function App() {
 
               let updated = {
                 ...s,
-                isDynamicBalancing:
-                  tx.isDynamicBalancing ?? s.isDynamicBalancing,
-                isLongTerm: tx.isLongTerm ?? s.isLongTerm,
-                isShortTerm: tx.isShortTerm ?? s.isShortTerm,
                 isTenX: tx.isTenX ?? s.isTenX,
-                isNova: tx.isNova ?? s.isNova,
-                novaPattern: tx.novaPattern ?? s.novaPattern,
-                strategySetupTime: tx.strategySetupTime ?? s.strategySetupTime,
-                strategy: tx.isDynamicBalancing
-                  ? "DEFENSE"
-                  : ((tx.isTenX
-                      ? "TENX"
-                      : tx.isNova
-                        ? "NOVA"
-                        : s.strategy) as any),
+                strategy: ((tx.isTenX ? "TENX" : s.strategy) as any),
               };
 
               if (editingTx) {
@@ -1752,15 +1644,6 @@ function App() {
                   updated.tenXBuyPrice = undefined;
                   updated.tenXShares = 0;
                 }
-              }
-
-              if (
-                editingTx &&
-                editingTx.isDynamicBalancing &&
-                !tx.isDynamicBalancing
-              ) {
-                updated.isDynamicBalancing = false;
-                updated.strategy = updated.isTenX ? "TENX" : undefined;
               }
 
               if (tx.isTenX) {
@@ -2371,11 +2254,10 @@ function App() {
   };
 
   const handleOpenTxForm = useCallback(
-    (stockId?: string | any, accountId?: string | any, strategy?: string) => {
+    (stockId?: string | any, accountId?: string | any) => {
       setEditingTx(null);
       setPrefillStockId(typeof stockId === "string" ? stockId : null);
       setPrefillAccountId(typeof accountId === "string" ? accountId : null);
-      setPrefillStrategy(typeof strategy === "string" ? strategy : null);
       setShowTxForm(true);
     },
     [],
@@ -2629,40 +2511,6 @@ function App() {
               }}
             />
           )}
-          {activeTab === "etf_info" && (
-            <ETFInfo
-              stocks={stocks.filter((s) => !s.hidden)}
-              techSettings={techSettings}
-              onUpdateTechSettings={setTechSettings}
-            />
-          )}
-          {activeTab === "screener" && (
-            <StockScreener
-              onNavigateToMarket={(sym) => {
-                setMarketSymbol(sym);
-                setActiveTab("market");
-              }}
-            />
-          )}
-          {activeTab === "nova" && (
-            <NovaStrategy
-              stocks={stocks}
-              watchlist={novaWatchlist}
-              onUpdateWatchlist={setNovaWatchlist}
-              transactions={transactions}
-              exchangeRate={exchangeRate}
-              onUpdateStock={handleUpdateStock}
-              onAddStock={handleAddStock}
-              onDeleteStock={handleDeleteStock}
-              marketFilter={market}
-              accounts={accounts}
-              suggestedCategories={customCategories}
-              onUpdateSuggestedCategories={setCustomCategories}
-              stockOrder={stockOrder}
-              onUpdateOrder={setStockOrder}
-              onAddTransaction={handleOpenTxForm}
-            />
-          )}
           {activeTab === "trend" && (
             <AssetTrend
               history={assetHistory}
@@ -2700,18 +2548,6 @@ function App() {
               accounts={accounts} // Pass accounts for account-specific DCA settings
               suggestedCategories={customCategories}
               onUpdateSuggestedCategories={setCustomCategories}
-            />
-          )}
-          {activeTab === "defense" && (
-            <ValueDefenseTable
-              stocks={stocks}
-              transactions={transactions}
-              onAddStock={handleAddStock}
-              onUpdateStock={handleUpdateStock}
-              onDeleteStock={handleDeleteStock}
-              marketFilter={market}
-              accounts={accounts}
-              onAddTransaction={handleOpenTxForm}
             />
           )}
           {activeTab === "tenx" && (
@@ -2761,13 +2597,6 @@ function App() {
               recurringRules={recurringCashRules}
               onUpdateRecurringRules={setRecurringCashRules}
               budgetItems={budgetItems}
-            />
-          )}
-          {activeTab === "dream" && (
-            <DreamGoals
-              portfolio={portfolio}
-              onUpdateStock={handleUpdateStock}
-              exchangeRate={exchangeRate}
             />
           )}
           {activeTab === "settings" && (
@@ -2855,7 +2684,6 @@ function App() {
           initialData={editingTx}
           defaultStockId={prefillStockId}
           defaultAccountId={prefillAccountId}
-          defaultStrategy={prefillStrategy}
         />
       )}
     </div>

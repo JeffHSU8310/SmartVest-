@@ -21,7 +21,7 @@ interface Props {
   accounts?: Account[];
   suggestedCategories?: string[];
   onUpdateSuggestedCategories?: (categories: string[]) => void;
-  strategyFilter?: 'DEFENSE' | 'NOVA' | 'TENX';
+  strategyFilter?: 'TENX';
 }
 
 const DEFAULT_CATEGORIES = ['市值型ETF', '高股息型ETF', '債券型ETF'];
@@ -702,18 +702,10 @@ const StockManager: React.FC<Props> = ({
         });
     }
 
-    if (strategyFilter) {
-      if (strategyFilter === 'DEFENSE') {
-        result = result.filter(s => s.isDynamicBalancing || s.strategy === 'DEFENSE' || s.category === '動態平衡策略' || s.category?.includes('動態平衡'));
-      } else if (strategyFilter === 'NOVA') {
-        result = result.filter(s => s.isNova || s.strategy === 'NOVA' || s.category === 'Nova策略' || s.category?.includes('Nova'));
-      } else if (strategyFilter === 'TENX') {
-        result = result.filter(s => s.isTenX || s.strategy === 'TENX' || s.category?.includes('十倍大盤') || s.isTenXCandidate);
-      }
+    if (strategyFilter === 'TENX') {
+      result = result.filter(s => s.isTenX || s.strategy === 'TENX' || s.category?.includes('十倍大盤') || s.isTenXCandidate);
     } else {
-      result = result.filter(s => 
-        !(s.isDynamicBalancing || s.strategy === 'DEFENSE' || s.category === '動態平衡策略' || s.category?.includes('動態平衡')) &&
-        !(s.isNova || s.strategy === 'NOVA' || s.category === 'Nova策略' || s.category?.includes('Nova')) &&
+      result = result.filter(s =>
         !(s.isTenX || s.strategy === 'TENX' || s.category?.includes('十倍大盤') || s.isTenXCandidate)
       );
     }
@@ -766,11 +758,7 @@ const StockManager: React.FC<Props> = ({
 
   const handleAddClick = () => {
     resetForm();
-    if (strategyFilter) {
-      if (strategyFilter === 'DEFENSE') setCategory('動態平衡策略');
-      if (strategyFilter === 'NOVA') setCategory('Nova策略');
-      if (strategyFilter === 'TENX') setCategory('十倍大盤策略');
-    }
+    if (strategyFilter === 'TENX') setCategory('十倍大盤策略');
     setIsAdding(true);
   };
 
@@ -918,10 +906,9 @@ const StockManager: React.FC<Props> = ({
       dividendMonths: dividendMonths.length > 0 ? dividendMonths : undefined
     };
 
-    if (!editingId && strategyFilter) {
-      if (strategyFilter === 'DEFENSE') { stockData.isDynamicBalancing = true; stockData.strategy = 'DEFENSE'; }
-      if (strategyFilter === 'NOVA') { stockData.isNova = true; stockData.strategy = 'NOVA'; }
-      if (strategyFilter === 'TENX') { stockData.isTenX = true; stockData.strategy = 'TENX'; }
+    if (!editingId && strategyFilter === 'TENX') {
+      stockData.isTenX = true;
+      stockData.strategy = 'TENX';
     }
 
     if (editingId) {
