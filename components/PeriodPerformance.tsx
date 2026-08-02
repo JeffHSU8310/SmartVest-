@@ -93,32 +93,57 @@ export default function PeriodPerformance({ portfolio, transactions, exchangeRat
         return p.totalShares > 0 || transactions.some(t => t.stockId === p.stock.id);
       });
 
-      // 極速優化：一次平行預抓所有持股標的過去 450 天 K 線歷史，避免在雙重迴圈中發起 160 次串行請求
+      // 極速優化：一次平行預抓所有持股標的過去 450 天 K 線歷史，並以 localStorage 進行持久化快取
       const uniqueSymbols = Array.from(new Set(relevantPortfolio.map(p => p.stock.ticker || p.stock.id)));
       const nowSec = Math.floor(now.getTime() / 1000);
       const period1Sec = nowSec - 450 * 86400;
       const symbolPriceMap = new Map<string, Map<string, number>>();
 
-      await Promise.all(
-        uniqueSymbols.map(async (sym) => {
-          try {
-            const historyData = await fetchYahooHistoryUniversal(sym, period1Sec, nowSec + 86400, '1d');
-            let result = historyData?.chart?.result?.[0] || (historyData?.indicators?.quote?.[0] ? historyData : null);
-            if (result && result.indicators?.quote?.[0] && result.timestamp) {
-              const quote = result.indicators.quote[0];
-              const timestamps: number[] = result.timestamp;
-              const datePriceMap = new Map<string, number>();
-              for (let i = 0; i < timestamps.length; i++) {
-                if (quote.close[i] != null) {
-                  const dateStr = new Date(timestamps[i] * 1000).toISOString().split('T')[0];
-                  datePriceMap.set(dateStr, quote.close[i]);
+      const KLINE_CACHE_KEY = 'smartvest_kline_persistent_v1';
+      try {
+        const cachedJson = localStorage.getItem(KLINE_CACHE_KEY);
+        if (cachedJson) {
+          const parsed = JSON.parse(cachedJson);
+          if (parsed.timestamp && (Date.now() - parsed.timestamp < 12 * 3600 * 1000) && parsed.data) {
+            Object.entries(parsed.data).forEach(([sym, dateObj]: [string, any]) => {
+              symbolPriceMap.set(sym, new Map<string, number>(Object.entries(dateObj)));
+            });
+          }
+        }
+      } catch (e) {}
+
+      const symbolsToFetch = uniqueSymbols.filter(sym => !symbolPriceMap.has(sym) || forceRefresh > 0);
+
+      if (symbolsToFetch.length > 0) {
+        await Promise.all(
+          symbolsToFetch.map(async (sym) => {
+            try {
+              const historyData = await fetchYahooHistoryUniversal(sym, period1Sec, nowSec + 86400, '1d');
+              let result = historyData?.chart?.result?.[0] || (historyData?.indicators?.quote?.[0] ? historyData : null);
+              if (result && result.indicators?.quote?.[0] && result.timestamp) {
+                const quote = result.indicators.quote[0];
+                const timestamps: number[] = result.timestamp;
+                const datePriceMap = new Map<string, number>();
+                for (let i = 0; i < timestamps.length; i++) {
+                  if (quote.close[i] != null) {
+                    const dateStr = new Date(timestamps[i] * 1000).toISOString().split('T')[0];
+                    datePriceMap.set(dateStr, quote.close[i]);
+                  }
                 }
+                symbolPriceMap.set(sym, datePriceMap);
               }
-              symbolPriceMap.set(sym, datePriceMap);
-            }
-          } catch (e) {}
-        })
-      );
+            } catch (e) {}
+          })
+        );
+
+        try {
+          const dataToSave: Record<string, Record<string, number>> = {};
+          symbolPriceMap.forEach((dateMap, sym) => {
+            dataToSave[sym] = Object.fromEntries(dateMap);
+          });
+          localStorage.setItem(KLINE_CACHE_KEY, JSON.stringify({ timestamp: Date.now(), data: dataToSave }));
+        } catch (e) {}
+      }
 
       const getHistoricalPriceFast = async (symbol: string, targetDateStr: string): Promise<number | null> => {
         const dateMap = symbolPriceMap.get(symbol);
