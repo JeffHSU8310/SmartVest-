@@ -1917,242 +1917,112 @@ function App() {
       // 2. Fetch prices & map NAV
       const updatedStocks = await Promise.all(
         stocks.map(async (stock) => {
-          let updatedStock = { ...stock };
+          const timeoutPromise = new Promise<Stock>((resolve) => {
+            setTimeout(() => resolve({ ...stock }), 2000);
+          });
 
-          const cleanCode = stock.ticker.split(".")[0].trim().toUpperCase();
-          let priceResolved = false;
+          const processPromise = (async () => {
+            let updatedStock = { ...stock };
+            const cleanCode = stock.ticker.split(".")[0].trim().toUpperCase();
 
-          // 最優先：FinMind 100% 直連全台股對照表 (0.2 秒極速)
-          const fmMatched = finMindMap?.get(cleanCode);
-          if (!isDesktopEnv && fmMatched && fmMatched.price > 0) {
-            updatedStock.currentPrice = fmMatched.price;
-            if (fmMatched.name && (!updatedStock.name || updatedStock.name === updatedStock.ticker)) {
-              updatedStock.name = fmMatched.name;
-            }
-            updatedStock.lastUpdateDate = getLocalTodayString();
-            priceResolved = true;
-          }
-
-          // 次選：盤中即時價 (mis.twse)
-          const live = twRealtimeMap?.get(cleanCode);
-          if (!priceResolved && !isDesktopEnv && live && live.price > 0) {
-            updatedStock.currentPrice = live.price;
-            if (live.prevClose > 0) updatedStock.previousClose = live.prevClose;
-            if (live.name && (!updatedStock.name || updatedStock.name === updatedStock.ticker)) {
-              updatedStock.name = live.name;
-            }
-            updatedStock.marketState = live.isLive ? "REGULAR" : "CLOSED";
-            updatedStock.lastUpdateDate = getLocalTodayString();
-            priceResolved = true;
-          }
-
-          // 三選：全台股日收盤對照表 O(1) 拿取價格
-          if (!priceResolved && !isDesktopEnv && twMarketMap && twMarketMap.has(cleanCode)) {
-            const matched = twMarketMap.get(cleanCode)!;
-            if (matched.price > 0) {
-              updatedStock.currentPrice = matched.price;
-              if (matched.name && (!updatedStock.name || updatedStock.name === updatedStock.ticker)) {
-                updatedStock.name = matched.name;
+            // 最優先：FinMind 100% 直連全台股對照表 (0.2 秒極速)
+            const fmMatched = finMindMap?.get(cleanCode);
+            if (!isDesktopEnv && fmMatched && fmMatched.price > 0) {
+              updatedStock.currentPrice = fmMatched.price;
+              if (fmMatched.name && (!updatedStock.name || updatedStock.name === updatedStock.ticker)) {
+                updatedStock.name = fmMatched.name;
               }
               updatedStock.lastUpdateDate = getLocalTodayString();
-              priceResolved = true;
-            }
-          }
-
-          // 特殊處理：基金標的
-          const isProbablyFund =
-            stock.market === Market.FUND ||
-            ((stock.category?.includes("基金") ||
-              stock.name?.includes("基金")) &&
-              !/^[0-9]{4,6}[A-Z]?(\.TW|\.TWO)?$/i.test(stock.ticker) &&
-              !/^[A-Z]{1,5}$/.test(stock.ticker));
-
-          if (!priceResolved && isProbablyFund) {
-            try {
-              let fundData = null;
-              if (isDesktopEnv) {
-                const res = await window.electronAPI!.fetchFundNAV(stock.name);
-                if (res.data) fundData = res.data;
-              } else {
-                // 網頁版先查 MoneyDJ 淨值（以基金名稱搜尋）。
-                // 基金沒有股票代號，先前只丟給 Yahoo 查，對境內基金幾乎必定查無，
-                // 淨值因此一直不動。Yahoo 僅保留給有掛牌代號的境外標的當備援。
-                const fundNav = await fetchFundNavByName(stock.name || stock.ticker);
-                if (fundNav && fundNav.nav > 0) {
-                  fundData = { nav: fundNav.nav, date: fundNav.date };
-                } else {
-                  const apiRes = await fetchCurrentYahooQuote(stock.ticker || stock.name);
-                  if (apiRes.success && apiRes.regularMarketPrice > 0) {
-                    fundData = { nav: apiRes.regularMarketPrice, date: getLocalTodayString() };
-                  }
-                }
-              }
-
-              if (fundData && fundData.nav != null) {
-                updatedStock.currentPrice = fundData.nav;
-                updatedStock.nav = fundData.nav;
-                updatedStock.lastUpdateDate = getLocalTodayString();
-              }
-            } catch (error: any) {
-              console.error(`Fund fetch failed for ${stock.name}`, error);
-            }
-            if (updatedStock.currentPrice && updatedStock.currentPrice > 0) {
+              if (!updatedStock.nav) updatedStock.nav = fmMatched.price;
               return updatedStock;
             }
-          }
 
-          let finalSymbol = stock.ticker;
-          if (stock.market === Market.TW && !stock.ticker.includes("."))
-            finalSymbol = `${stock.ticker}.TW`;
+            // 次選：盤中即時價 (mis.twse)
+            const live = twRealtimeMap?.get(cleanCode);
+            if (!isDesktopEnv && live && live.price > 0) {
+              updatedStock.currentPrice = live.price;
+              if (live.prevClose > 0) updatedStock.previousClose = live.prevClose;
+              if (live.name && (!updatedStock.name || updatedStock.name === updatedStock.ticker)) {
+                updatedStock.name = live.name;
+              }
+              updatedStock.marketState = live.isLive ? "REGULAR" : "CLOSED";
+              updatedStock.lastUpdateDate = getLocalTodayString();
+              if (!updatedStock.nav) updatedStock.nav = live.price;
+              return updatedStock;
+            }
 
-          // 市價已由即時報價/日收盤表取得時就別再打 Yahoo：
-          // 它較慢、盤中資料也不如 mis.twse 新，重抓只會把好資料蓋掉。
-          // 注意 finalSymbol 已在上方算好，下方的淨值區塊仍要用到它。
-          try {
-            if (priceResolved) {
-              // 市價已取得，直接進入淨值處理
-            } else if (isDesktopEnv) {
-              const res =
-                await window.electronAPI!.fetchYahooQuote(finalSymbol);
-              if (res.error)
-                errorMessages.push(`${finalSymbol} Quote Err: ${res.error}`);
-              if (res.data && res.data.regularMarketPrice != null) {
-                updatedStock.currentPrice = res.data.regularMarketPrice;
-              }
-              if (res.data && res.data.postMarketPrice != null) {
-                updatedStock.postMarketPrice = res.data.postMarketPrice;
-              }
-              if (res.data && res.data.preMarketPrice != null) {
-                updatedStock.preMarketPrice = res.data.preMarketPrice;
-              }
-              if (res.data && res.data.marketState != null) {
-                updatedStock.marketState = res.data.marketState;
-              }
-            } else {
-              const apiRes = await fetchCurrentYahooQuote(finalSymbol);
-              if (apiRes.success && apiRes.regularMarketPrice > 0) {
-                updatedStock.currentPrice = apiRes.regularMarketPrice;
-                if (apiRes.postMarketPrice != null) {
-                  updatedStock.postMarketPrice = apiRes.postMarketPrice;
+            // 三選：全台股日收盤對照表 O(1) 拿取價格
+            if (!isDesktopEnv && twMarketMap && twMarketMap.has(cleanCode)) {
+              const matched = twMarketMap.get(cleanCode)!;
+              if (matched.price > 0) {
+                updatedStock.currentPrice = matched.price;
+                if (matched.name && (!updatedStock.name || updatedStock.name === updatedStock.ticker)) {
+                  updatedStock.name = matched.name;
                 }
-                if (apiRes.preMarketPrice != null) {
-                  updatedStock.preMarketPrice = apiRes.preMarketPrice;
-                }
-                if (apiRes.marketState != null) {
-                  updatedStock.marketState = apiRes.marketState;
-                }
-              } else if (stock.market === Market.TW) {
-                const otcApiRes = await fetchCurrentYahooQuote(
-                  stock.ticker + ".TWO",
-                );
-                if (otcApiRes.success && otcApiRes.regularMarketPrice > 0) {
-                  updatedStock.currentPrice = otcApiRes.regularMarketPrice;
-                  finalSymbol = stock.ticker + ".TWO";
-                }
+                updatedStock.lastUpdateDate = getLocalTodayString();
+                if (!updatedStock.nav) updatedStock.nav = matched.price;
+                return updatedStock;
               }
             }
 
-            // Fetch MA Data (SMA20, EMA50, EMA100) 僅在未取得現價時作為備援
-            if (!priceResolved) {
+            // 特殊處理：基金標的
+            const isProbablyFund =
+              stock.market === Market.FUND ||
+              ((stock.category?.includes("基金") ||
+                stock.name?.includes("基金")) &&
+                !/^[0-9]{4,6}[A-Z]?(\.TW|\.TWO)?$/i.test(stock.ticker) &&
+                !/^[A-Z]{1,5}$/.test(stock.ticker));
+
+            if (isProbablyFund) {
               try {
-                const maRes = await fetchMADataForSymbol(finalSymbol);
-                if (maRes) {
-                  if (maRes.sma20) updatedStock.sma20 = maRes.sma20;
-                  if (maRes.ema50) updatedStock.ema50 = maRes.ema50;
-                  if (maRes.ema100) updatedStock.ema100 = maRes.ema100;
-                  if (!updatedStock.currentPrice && maRes.currentPrice) {
-                    updatedStock.currentPrice = maRes.currentPrice;
-                  }
-                } else if (
-                  stock.market === Market.TW &&
-                  finalSymbol.endsWith(".TW")
-                ) {
-                  const otcMaRes = await fetchMADataForSymbol(
-                    stock.ticker + ".TWO",
-                  );
-                  if (otcMaRes) {
-                    if (otcMaRes.sma20) updatedStock.sma20 = otcMaRes.sma20;
-                    if (otcMaRes.ema50) updatedStock.ema50 = otcMaRes.ema50;
-                    if (otcMaRes.ema100) updatedStock.ema100 = otcMaRes.ema100;
-                    if (!updatedStock.currentPrice && otcMaRes.currentPrice) {
-                      updatedStock.currentPrice = otcMaRes.currentPrice;
-                    }
-                  }
-                }
-              } catch (e) {}
-            }
-          } catch (error: any) {
-            errorMessages.push(
-              `${finalSymbol} Quote Exception: ${error.message}`,
-            );
-          }
-
-          try {
-            // Try Official TWSE First
-            let navFound = false;
-            const cleanTicker = stock.ticker.split(".")[0].trim().toUpperCase();
-            const twseEtf = twseEtfList.find((e: any) => e.a === cleanTicker);
-
-            if (twseEtf) {
-              if (
-                twseEtf.e &&
-                (!updatedStock.currentPrice || updatedStock.currentPrice === 0)
-              ) {
-                const mktPrice = parseFloat(twseEtf.e);
-                if (!isNaN(mktPrice) && mktPrice > 0)
-                  updatedStock.currentPrice = mktPrice;
-              }
-              if (twseEtf.f) {
-                const officialNav = parseFloat(twseEtf.f);
-                // 未更新的 ETF 會回 0，寫進去會讓折溢價顯示成 -100%
-                if (!isNaN(officialNav) && officialNav > 0) {
-                  updatedStock.nav = officialNav;
-                  navFound = true;
-                }
-              }
-            }
-
-            if (!navFound && updatedStock.currentPrice && updatedStock.currentPrice > 0) {
-              if (!updatedStock.nav) updatedStock.nav = updatedStock.currentPrice;
-              navFound = true;
-            }
-
-            // 只有 ETF / 基金才有淨值可言。一般個股沒有淨值，
-            // 卻為每一檔都打一次 Yahoo，既拖慢更新又只是把市價填進 nav。
-            const isEtfLike =
-              !!twseEtf || stock.market === Market.FUND || isProbablyFund;
-
-            // Fallback to Yahoo QuoteSummary
-            if (!navFound && isEtfLike) {
-              let usNavFound = false;
-              try {
+                let fundData = null;
                 if (isDesktopEnv) {
-                  const res =
-                    await window.electronAPI!.fetchYahooSummary(finalSymbol);
-                  if (res.data && res.data.nav != null) {
-                    updatedStock.nav = res.data.nav;
-                    usNavFound = true;
-                  }
+                  const res = await window.electronAPI!.fetchFundNAV(stock.name);
+                  if (res.data) fundData = res.data;
                 } else {
-                  const quoteRes = await fetchCurrentYahooQuote(finalSymbol);
-                  if (quoteRes.success && quoteRes.regularMarketPrice != null) {
-                    if (!updatedStock.nav) updatedStock.nav = quoteRes.regularMarketPrice;
-                    usNavFound = true;
+                  const fundNav = await fetchFundNavByName(stock.name || stock.ticker);
+                  if (fundNav && fundNav.nav > 0) {
+                    fundData = { nav: fundNav.nav, date: fundNav.date };
                   }
                 }
-              } catch (e: any) {
-                errorMessages.push(
-                  `${finalSymbol} NAV Fetch Err: ${e.message}`,
-                );
+
+                if (fundData && fundData.nav != null) {
+                  updatedStock.currentPrice = fundData.nav;
+                  updatedStock.nav = fundData.nav;
+                  updatedStock.lastUpdateDate = getLocalTodayString();
+                }
+              } catch (error: any) {}
+              if (updatedStock.currentPrice && updatedStock.currentPrice > 0) {
+                return updatedStock;
               }
             }
-          } catch (error: any) {
-            errorMessages.push(
-              `${finalSymbol} NAV Block Exception: ${error.message}`,
-            );
-          }
 
-          return updatedStock;
+            let finalSymbol = stock.ticker;
+            if (stock.market === Market.TW && !stock.ticker.includes("."))
+              finalSymbol = `${stock.ticker}.TW`;
+
+            try {
+              if (isDesktopEnv) {
+                const res = await window.electronAPI!.fetchYahooQuote(finalSymbol);
+                if (res.data && res.data.regularMarketPrice != null) {
+                  updatedStock.currentPrice = res.data.regularMarketPrice;
+                }
+              } else {
+                const apiRes = await fetchCurrentYahooQuote(finalSymbol);
+                if (apiRes.success && apiRes.regularMarketPrice > 0) {
+                  updatedStock.currentPrice = apiRes.regularMarketPrice;
+                }
+              }
+            } catch (error: any) {}
+
+            if (updatedStock.currentPrice && !updatedStock.nav) {
+              updatedStock.nav = updatedStock.currentPrice;
+            }
+
+            return updatedStock;
+          })();
+
+          return Promise.race([processPromise, timeoutPromise]);
         }),
       );
       setStocks(updatedStocks);

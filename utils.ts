@@ -1187,7 +1187,7 @@ export const fetchFundNavByName = async (
     const searchUrl = `https://www.moneydj.com/funddj/ya/yFundSearch.djhtm?a=${encodeURIComponent(name)}`;
 
     try {
-        const res = await fetchWithTimeout(`https://r.jina.ai/${searchUrl}`, undefined, 25000);
+        const res = await fetchWithTimeout(`https://r.jina.ai/${searchUrl}`, undefined, 1800);
         if (!res.ok) return null;
         const md = await res.text();
 
