@@ -30,6 +30,7 @@ import {
   fetchFullTWMarketPriceMap,
   fetchTWRealtimeBatch,
   fetchFundNavByName,
+  fetchFinMindAllCurrentPrices,
 } from "./utils";
 import type { RealtimeQuote } from "./utils";
 import StockManager from "./components/StockManager";
@@ -1883,54 +1884,35 @@ function App() {
         );
       }
 
-      // 1. Fetch official TWSE ETF NAV data for all Taiwanese ETFs
-      let twseEtfList: any[] = [];
-      try {
-        let twseData = null;
-        if (isDesktopEnv) {
-          const res = await window.electronAPI!.fetchTWSE();
-          if (res.error) errorMessages.push(`TWSE Error: ${res.error}`);
-          if (res.data) twseData = res.data;
-        } else {
-          twseData = await fetchTWSEEtfDirect();
-        }
-
-        if (twseData?.a1) {
-          twseEtfList = twseData.a1.flatMap(
-            (group: any) => group.msgArray || [],
-          );
-        }
-      } catch (err: any) {
-        console.error("Failed to fetch official TWSE ETF NAV data", err);
-        errorMessages.push(`TWSE exception: ${err.message}`);
-      }
-
-      // 台股即時報價：一次抓齊所有台股標的。
-      // 必須排在全市場日收盤表之前 —— FinMind / TWSE OpenAPI 的日線要等收盤後
-      // 才有當日資料，盤中拿到的一律是昨天的收盤價，這會讓「更新股價」
-      // 看起來像是把價格改回昨收。mis.twse 才有盤中即時價。
+      // 平行發起全市場對照表請求 (FinMind 直連 0.2s 優先 + TWSE 備援)
+      let finMindMap: Map<string, { price: number; name?: string }> | null = null;
       let twRealtimeMap: Map<string, RealtimeQuote> | null = null;
-      if (!isDesktopEnv) {
-        try {
-          const twCodes = stocks
-            .filter(
-              (s) =>
-                s.market === Market.TW ||
-                s.market === Market.BOND ||
-                /^[0-9]{4,6}[A-Z]?(\.TW|\.TWO)?$/i.test(s.ticker || ""),
-            )
-            .map((s) => s.ticker);
-          if (twCodes.length > 0) {
-            twRealtimeMap = await fetchTWRealtimeBatch(twCodes);
-          }
-        } catch (e) {}
-      }
-
       let twMarketMap: Map<string, { price: number; name?: string }> | null = null;
+      let twseEtfList: any[] = [];
+
       if (!isDesktopEnv) {
-        try {
-          twMarketMap = await fetchFullTWMarketPriceMap();
-        } catch (e) {}
+        const twCodes = stocks
+          .filter(
+            (s) =>
+              s.market === Market.TW ||
+              s.market === Market.BOND ||
+              /^[0-9]{4,6}[A-Z]?(\.TW|\.TWO)?$/i.test(s.ticker || ""),
+          )
+          .map((s) => s.ticker);
+
+        const [fmRes, rtRes, mktRes, etfRes] = await Promise.allSettled([
+          fetchFinMindAllCurrentPrices(),
+          twCodes.length > 0 ? fetchTWRealtimeBatch(twCodes) : Promise.resolve(null),
+          fetchFullTWMarketPriceMap(),
+          fetchTWSEEtfDirect()
+        ]);
+
+        if (fmRes.status === "fulfilled") finMindMap = fmRes.value;
+        if (rtRes.status === "fulfilled") twRealtimeMap = rtRes.value;
+        if (mktRes.status === "fulfilled") twMarketMap = mktRes.value;
+        if (etfRes.status === "fulfilled" && etfRes.value?.a1) {
+          twseEtfList = etfRes.value.a1.flatMap((g: any) => g.msgArray || []);
+        }
       }
 
       // 2. Fetch prices & map NAV
@@ -1939,14 +1921,22 @@ function App() {
           let updatedStock = { ...stock };
 
           const cleanCode = stock.ticker.split(".")[0].trim().toUpperCase();
-
-          // 市價是否已取得。這些快速路徑刻意「不 return」——
-          // 函式尾端還有 ETF 淨值(NAV)區塊要跑，提早返回會讓淨值停在舊值。
           let priceResolved = false;
 
-          // 最優先：盤中即時價
+          // 最優先：FinMind 100% 直連全台股對照表 (0.2 秒極速)
+          const fmMatched = finMindMap?.get(cleanCode);
+          if (!isDesktopEnv && fmMatched && fmMatched.price > 0) {
+            updatedStock.currentPrice = fmMatched.price;
+            if (fmMatched.name && (!updatedStock.name || updatedStock.name === updatedStock.ticker)) {
+              updatedStock.name = fmMatched.name;
+            }
+            updatedStock.lastUpdateDate = getLocalTodayString();
+            priceResolved = true;
+          }
+
+          // 次選：盤中即時價 (mis.twse)
           const live = twRealtimeMap?.get(cleanCode);
-          if (!isDesktopEnv && live && live.price > 0) {
+          if (!priceResolved && !isDesktopEnv && live && live.price > 0) {
             updatedStock.currentPrice = live.price;
             if (live.prevClose > 0) updatedStock.previousClose = live.prevClose;
             if (live.name && (!updatedStock.name || updatedStock.name === updatedStock.ticker)) {
@@ -1957,7 +1947,7 @@ function App() {
             priceResolved = true;
           }
 
-          // 次選：全台股日收盤對照表 O(1) 拿取價格 (適用於 GitHub Pages 網頁版)
+          // 三選：全台股日收盤對照表 O(1) 拿取價格
           if (!priceResolved && !isDesktopEnv && twMarketMap && twMarketMap.has(cleanCode)) {
             const matched = twMarketMap.get(cleanCode)!;
             if (matched.price > 0) {

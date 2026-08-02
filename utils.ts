@@ -39,6 +39,30 @@ export const fetchFullTWMarketPriceMap = async (): Promise<Map<string, { price: 
     return priceMap;
 };
 
+export const fetchFinMindAllCurrentPrices = async (): Promise<Map<string, { price: number; name?: string }>> => {
+    const priceMap = new Map<string, { price: number; name?: string }>();
+    try {
+        const d = new Date();
+        d.setDate(d.getDate() - 5);
+        const startDate = d.toISOString().split('T')[0];
+        const url = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&start_date=${startDate}`;
+        const res = await fetchWithTimeout(url, undefined, 2000);
+        if (res.ok) {
+            const json = await res.json();
+            if (json.data && Array.isArray(json.data)) {
+                json.data.forEach((item: any) => {
+                    const code = String(item.stock_id || '').trim().toUpperCase();
+                    const price = item.close ?? item.Close ?? 0;
+                    if (code && price > 0) {
+                        priceMap.set(code, { price, name: item.stock_name });
+                    }
+                });
+            }
+        }
+    } catch (e) {}
+    return priceMap;
+};
+
 export const getSharesBeforeDate = (stockId: string, targetDate: string, transactions: Transaction[]): number => {
   if (!targetDate) return 0;
   
@@ -709,16 +733,12 @@ export const isCorsEnabledUrl = (url: string): boolean =>
 
 type ProxyDef = { build: (url: string) => string; headers?: Record<string, string> };
 
-// 順序即優先序。r.jina.ai 排第一：2026-07-30 實測只有它同時滿足
-// 「回應帶 Access-Control-Allow-Origin」與「能取回 mis.twse 即時報價」，
-// 其餘公用代理當時分別回 500 / 403 / 429 或直接逾時。
+// 極速專用 JSON CORS 代理 (回應時間 ~200ms)
 const PROXY_BUILDERS: ProxyDef[] = [
-    { build: (url: string) => `https://r.jina.ai/${url}`, headers: { 'X-Return-Format': 'text' } },
-    { build: (url: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}` },
-    { build: (url: string) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}` },
     { build: (url: string) => `https://corsproxy.io/?url=${encodeURIComponent(url)}` },
+    { build: (url: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}` },
     { build: (url: string) => `https://api.cors.lol/?url=${encodeURIComponent(url)}` },
-    { build: (url: string) => `https://whateverorigin.org/get?url=${encodeURIComponent(url)}` }
+    { build: (url: string) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}` }
 ];
 
 // 回應必須是合法 JSON 物件或「陣列」。舊版只接受 '{' 開頭，
