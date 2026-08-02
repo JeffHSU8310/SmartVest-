@@ -39,30 +39,6 @@ export const fetchFullTWMarketPriceMap = async (): Promise<Map<string, { price: 
     return priceMap;
 };
 
-export const fetchFinMindAllCurrentPrices = async (): Promise<Map<string, { price: number; name?: string }>> => {
-    const priceMap = new Map<string, { price: number; name?: string }>();
-    try {
-        const d = new Date();
-        d.setDate(d.getDate() - 5);
-        const startDate = d.toISOString().split('T')[0];
-        const url = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&start_date=${startDate}`;
-        const res = await fetchWithTimeout(url, undefined, 2000);
-        if (res.ok) {
-            const json = await res.json();
-            if (json.data && Array.isArray(json.data)) {
-                json.data.forEach((item: any) => {
-                    const code = String(item.stock_id || '').trim().toUpperCase();
-                    const price = item.close ?? item.Close ?? 0;
-                    if (code && price > 0) {
-                        priceMap.set(code, { price, name: item.stock_name });
-                    }
-                });
-            }
-        }
-    } catch (e) {}
-    return priceMap;
-};
-
 export const getSharesBeforeDate = (stockId: string, targetDate: string, transactions: Transaction[]): number => {
   if (!targetDate) return 0;
   
@@ -765,18 +741,17 @@ export const safeFetchJson = async (targetUrl: string, init?: RequestInit): Prom
     // 本身開放 CORS 的來源直連失敗就是真的失敗，不必再繞代理浪費時間。
     if (isCorsEnabledUrl(targetUrl)) return null;
 
-    // 只試驗前 2 個最速代理 (corsproxy.io, allorigins)，單次最多等 2.5 秒
-    const fastProxies = PROXY_BUILDERS.slice(0, 2);
-    for (const proxy of fastProxies) {
+    for (const proxy of PROXY_BUILDERS) {
         try {
             const merged: RequestInit = proxy.headers
                 ? { ...init, headers: { ...(init?.headers as any), ...proxy.headers } }
                 : init;
-            const res = await fetchWithTimeout(proxy.build(targetUrl), merged, 2500);
+            const res = await fetchWithTimeout(proxy.build(targetUrl), merged, 15000);
             if (!res.ok) continue;
             const text = await res.text();
             const parsed = parseJsonPayload(text);
             if (parsed !== null) {
+                // whateverorigin 會把內容包在 { contents: "..." } 裡
                 if (parsed.contents && typeof parsed.contents === 'string') {
                     const inner = parseJsonPayload(parsed.contents);
                     if (inner !== null) return inner;
@@ -1187,7 +1162,7 @@ export const fetchFundNavByName = async (
     const searchUrl = `https://www.moneydj.com/funddj/ya/yFundSearch.djhtm?a=${encodeURIComponent(name)}`;
 
     try {
-        const res = await fetchWithTimeout(`https://r.jina.ai/${searchUrl}`, undefined, 1800);
+        const res = await fetchWithTimeout(`https://r.jina.ai/${searchUrl}`, undefined, 25000);
         if (!res.ok) return null;
         const md = await res.text();
 

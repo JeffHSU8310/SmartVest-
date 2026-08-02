@@ -30,7 +30,6 @@ import {
   fetchFullTWMarketPriceMap,
   fetchTWRealtimeBatch,
   fetchFundNavByName,
-  fetchFinMindAllCurrentPrices,
 } from "./utils";
 import type { RealtimeQuote } from "./utils";
 import StockManager from "./components/StockManager";
@@ -1883,146 +1882,281 @@ function App() {
         );
       }
 
-      // 平行發起全市場對照表請求 (FinMind 直連 0.2s 優先 + TWSE 備援)
-      let finMindMap: Map<string, { price: number; name?: string }> | null = null;
-      let twRealtimeMap: Map<string, RealtimeQuote> | null = null;
-      let twMarketMap: Map<string, { price: number; name?: string }> | null = null;
+      // 1. Fetch official TWSE ETF NAV data for all Taiwanese ETFs
       let twseEtfList: any[] = [];
-
-      if (!isDesktopEnv) {
-        const twCodes = stocks
-          .filter(
-            (s) =>
-              s.market === Market.TW ||
-              s.market === Market.BOND ||
-              /^[0-9]{4,6}[A-Z]?(\.TW|\.TWO)?$/i.test(s.ticker || ""),
-          )
-          .map((s) => s.ticker);
-
-        const [fmRes, rtRes, mktRes, etfRes] = await Promise.allSettled([
-          fetchFinMindAllCurrentPrices(),
-          twCodes.length > 0 ? fetchTWRealtimeBatch(twCodes) : Promise.resolve(null),
-          fetchFullTWMarketPriceMap(),
-          fetchTWSEEtfDirect()
-        ]);
-
-        if (fmRes.status === "fulfilled") finMindMap = fmRes.value;
-        if (rtRes.status === "fulfilled") twRealtimeMap = rtRes.value;
-        if (mktRes.status === "fulfilled") twMarketMap = mktRes.value;
-        if (etfRes.status === "fulfilled" && etfRes.value?.a1) {
-          twseEtfList = etfRes.value.a1.flatMap((g: any) => g.msgArray || []);
+      try {
+        let twseData = null;
+        if (isDesktopEnv) {
+          const res = await window.electronAPI!.fetchTWSE();
+          if (res.error) errorMessages.push(`TWSE Error: ${res.error}`);
+          if (res.data) twseData = res.data;
+        } else {
+          twseData = await fetchTWSEEtfDirect();
         }
+
+        if (twseData?.a1) {
+          twseEtfList = twseData.a1.flatMap(
+            (group: any) => group.msgArray || [],
+          );
+        }
+      } catch (err: any) {
+        console.error("Failed to fetch official TWSE ETF NAV data", err);
+        errorMessages.push(`TWSE exception: ${err.message}`);
+      }
+
+      // 台股即時報價：一次抓齊所有台股標的。
+      // 必須排在全市場日收盤表之前 —— FinMind / TWSE OpenAPI 的日線要等收盤後
+      // 才有當日資料，盤中拿到的一律是昨天的收盤價，這會讓「更新股價」
+      // 看起來像是把價格改回昨收。mis.twse 才有盤中即時價。
+      let twRealtimeMap: Map<string, RealtimeQuote> | null = null;
+      if (!isDesktopEnv) {
+        try {
+          const twCodes = stocks
+            .filter(
+              (s) =>
+                s.market === Market.TW ||
+                s.market === Market.BOND ||
+                /^[0-9]{4,6}[A-Z]?(\.TW|\.TWO)?$/i.test(s.ticker || ""),
+            )
+            .map((s) => s.ticker);
+          if (twCodes.length > 0) {
+            twRealtimeMap = await fetchTWRealtimeBatch(twCodes);
+          }
+        } catch (e) {}
+      }
+
+      let twMarketMap: Map<string, { price: number; name?: string }> | null = null;
+      if (!isDesktopEnv) {
+        try {
+          twMarketMap = await fetchFullTWMarketPriceMap();
+        } catch (e) {}
       }
 
       // 2. Fetch prices & map NAV
       const updatedStocks = await Promise.all(
         stocks.map(async (stock) => {
-          const timeoutPromise = new Promise<Stock>((resolve) => {
-            setTimeout(() => resolve({ ...stock }), 2000);
-          });
+          let updatedStock = { ...stock };
 
-          const processPromise = (async () => {
-            let updatedStock = { ...stock };
-            const cleanCode = stock.ticker.split(".")[0].trim().toUpperCase();
+          const cleanCode = stock.ticker.split(".")[0].trim().toUpperCase();
 
-            // 最優先：FinMind 100% 直連全台股對照表 (0.2 秒極速)
-            const fmMatched = finMindMap?.get(cleanCode);
-            if (!isDesktopEnv && fmMatched && fmMatched.price > 0) {
-              updatedStock.currentPrice = fmMatched.price;
-              if (fmMatched.name && (!updatedStock.name || updatedStock.name === updatedStock.ticker)) {
-                updatedStock.name = fmMatched.name;
+          // 市價是否已取得。這些快速路徑刻意「不 return」——
+          // 函式尾端還有 ETF 淨值(NAV)區塊要跑，提早返回會讓淨值停在舊值。
+          let priceResolved = false;
+
+          // 最優先：盤中即時價
+          const live = twRealtimeMap?.get(cleanCode);
+          if (!isDesktopEnv && live && live.price > 0) {
+            updatedStock.currentPrice = live.price;
+            if (live.prevClose > 0) updatedStock.previousClose = live.prevClose;
+            if (live.name && (!updatedStock.name || updatedStock.name === updatedStock.ticker)) {
+              updatedStock.name = live.name;
+            }
+            updatedStock.marketState = live.isLive ? "REGULAR" : "CLOSED";
+            updatedStock.lastUpdateDate = getLocalTodayString();
+            priceResolved = true;
+          }
+
+          // 次選：全台股日收盤對照表 O(1) 拿取價格 (適用於 GitHub Pages 網頁版)
+          if (!priceResolved && !isDesktopEnv && twMarketMap && twMarketMap.has(cleanCode)) {
+            const matched = twMarketMap.get(cleanCode)!;
+            if (matched.price > 0) {
+              updatedStock.currentPrice = matched.price;
+              if (matched.name && (!updatedStock.name || updatedStock.name === updatedStock.ticker)) {
+                updatedStock.name = matched.name;
               }
               updatedStock.lastUpdateDate = getLocalTodayString();
-              if (!updatedStock.nav) updatedStock.nav = fmMatched.price;
-              return updatedStock;
+              priceResolved = true;
             }
+          }
 
-            // 次選：盤中即時價 (mis.twse)
-            const live = twRealtimeMap?.get(cleanCode);
-            if (!isDesktopEnv && live && live.price > 0) {
-              updatedStock.currentPrice = live.price;
-              if (live.prevClose > 0) updatedStock.previousClose = live.prevClose;
-              if (live.name && (!updatedStock.name || updatedStock.name === updatedStock.ticker)) {
-                updatedStock.name = live.name;
-              }
-              updatedStock.marketState = live.isLive ? "REGULAR" : "CLOSED";
-              updatedStock.lastUpdateDate = getLocalTodayString();
-              if (!updatedStock.nav) updatedStock.nav = live.price;
-              return updatedStock;
-            }
+          // 特殊處理：基金標的
+          const isProbablyFund =
+            stock.market === Market.FUND ||
+            ((stock.category?.includes("基金") ||
+              stock.name?.includes("基金")) &&
+              !/^[0-9]{4,6}[A-Z]?(\.TW|\.TWO)?$/i.test(stock.ticker) &&
+              !/^[A-Z]{1,5}$/.test(stock.ticker));
 
-            // 三選：全台股日收盤對照表 O(1) 拿取價格
-            if (!isDesktopEnv && twMarketMap && twMarketMap.has(cleanCode)) {
-              const matched = twMarketMap.get(cleanCode)!;
-              if (matched.price > 0) {
-                updatedStock.currentPrice = matched.price;
-                if (matched.name && (!updatedStock.name || updatedStock.name === updatedStock.ticker)) {
-                  updatedStock.name = matched.name;
-                }
-                updatedStock.lastUpdateDate = getLocalTodayString();
-                if (!updatedStock.nav) updatedStock.nav = matched.price;
-                return updatedStock;
-              }
-            }
-
-            // 特殊處理：基金標的
-            const isProbablyFund =
-              stock.market === Market.FUND ||
-              ((stock.category?.includes("基金") ||
-                stock.name?.includes("基金")) &&
-                !/^[0-9]{4,6}[A-Z]?(\.TW|\.TWO)?$/i.test(stock.ticker) &&
-                !/^[A-Z]{1,5}$/.test(stock.ticker));
-
-            if (isProbablyFund) {
-              try {
-                let fundData = null;
-                if (isDesktopEnv) {
-                  const res = await window.electronAPI!.fetchFundNAV(stock.name);
-                  if (res.data) fundData = res.data;
+          if (!priceResolved && isProbablyFund) {
+            try {
+              let fundData = null;
+              if (isDesktopEnv) {
+                const res = await window.electronAPI!.fetchFundNAV(stock.name);
+                if (res.data) fundData = res.data;
+              } else {
+                // 網頁版先查 MoneyDJ 淨值（以基金名稱搜尋）。
+                // 基金沒有股票代號，先前只丟給 Yahoo 查，對境內基金幾乎必定查無，
+                // 淨值因此一直不動。Yahoo 僅保留給有掛牌代號的境外標的當備援。
+                const fundNav = await fetchFundNavByName(stock.name || stock.ticker);
+                if (fundNav && fundNav.nav > 0) {
+                  fundData = { nav: fundNav.nav, date: fundNav.date };
                 } else {
-                  const fundNav = await fetchFundNavByName(stock.name || stock.ticker);
-                  if (fundNav && fundNav.nav > 0) {
-                    fundData = { nav: fundNav.nav, date: fundNav.date };
+                  const apiRes = await fetchCurrentYahooQuote(stock.ticker || stock.name);
+                  if (apiRes.success && apiRes.regularMarketPrice > 0) {
+                    fundData = { nav: apiRes.regularMarketPrice, date: getLocalTodayString() };
                   }
                 }
+              }
 
-                if (fundData && fundData.nav != null) {
-                  updatedStock.currentPrice = fundData.nav;
-                  updatedStock.nav = fundData.nav;
-                  updatedStock.lastUpdateDate = getLocalTodayString();
+              if (fundData && fundData.nav != null) {
+                updatedStock.currentPrice = fundData.nav;
+                updatedStock.nav = fundData.nav;
+                updatedStock.lastUpdateDate = getLocalTodayString();
+              }
+            } catch (error: any) {
+              console.error(`Fund fetch failed for ${stock.name}`, error);
+            }
+            if (updatedStock.currentPrice && updatedStock.currentPrice > 0) {
+              return updatedStock;
+            }
+          }
+
+          let finalSymbol = stock.ticker;
+          if (stock.market === Market.TW && !stock.ticker.includes("."))
+            finalSymbol = `${stock.ticker}.TW`;
+
+          // 市價已由即時報價/日收盤表取得時就別再打 Yahoo：
+          // 它較慢、盤中資料也不如 mis.twse 新，重抓只會把好資料蓋掉。
+          // 注意 finalSymbol 已在上方算好，下方的淨值區塊仍要用到它。
+          try {
+            if (priceResolved) {
+              // 市價已取得，直接進入淨值處理
+            } else if (isDesktopEnv) {
+              const res =
+                await window.electronAPI!.fetchYahooQuote(finalSymbol);
+              if (res.error)
+                errorMessages.push(`${finalSymbol} Quote Err: ${res.error}`);
+              if (res.data && res.data.regularMarketPrice != null) {
+                updatedStock.currentPrice = res.data.regularMarketPrice;
+              }
+              if (res.data && res.data.postMarketPrice != null) {
+                updatedStock.postMarketPrice = res.data.postMarketPrice;
+              }
+              if (res.data && res.data.preMarketPrice != null) {
+                updatedStock.preMarketPrice = res.data.preMarketPrice;
+              }
+              if (res.data && res.data.marketState != null) {
+                updatedStock.marketState = res.data.marketState;
+              }
+            } else {
+              const apiRes = await fetchCurrentYahooQuote(finalSymbol);
+              if (apiRes.success && apiRes.regularMarketPrice > 0) {
+                updatedStock.currentPrice = apiRes.regularMarketPrice;
+                if (apiRes.postMarketPrice != null) {
+                  updatedStock.postMarketPrice = apiRes.postMarketPrice;
                 }
-              } catch (error: any) {}
-              if (updatedStock.currentPrice && updatedStock.currentPrice > 0) {
-                return updatedStock;
+                if (apiRes.preMarketPrice != null) {
+                  updatedStock.preMarketPrice = apiRes.preMarketPrice;
+                }
+                if (apiRes.marketState != null) {
+                  updatedStock.marketState = apiRes.marketState;
+                }
+              } else if (stock.market === Market.TW) {
+                const otcApiRes = await fetchCurrentYahooQuote(
+                  stock.ticker + ".TWO",
+                );
+                if (otcApiRes.success && otcApiRes.regularMarketPrice > 0) {
+                  updatedStock.currentPrice = otcApiRes.regularMarketPrice;
+                  finalSymbol = stock.ticker + ".TWO";
+                }
               }
             }
 
-            let finalSymbol = stock.ticker;
-            if (stock.market === Market.TW && !stock.ticker.includes("."))
-              finalSymbol = `${stock.ticker}.TW`;
-
+            // Fetch MA Data (SMA20, EMA50, EMA100)
             try {
-              if (isDesktopEnv) {
-                const res = await window.electronAPI!.fetchYahooQuote(finalSymbol);
-                if (res.data && res.data.regularMarketPrice != null) {
-                  updatedStock.currentPrice = res.data.regularMarketPrice;
+              const maRes = await fetchMADataForSymbol(finalSymbol);
+              if (maRes) {
+                if (maRes.sma20) updatedStock.sma20 = maRes.sma20;
+                if (maRes.ema50) updatedStock.ema50 = maRes.ema50;
+                if (maRes.ema100) updatedStock.ema100 = maRes.ema100;
+                if (!updatedStock.currentPrice && maRes.currentPrice) {
+                  updatedStock.currentPrice = maRes.currentPrice;
                 }
-              } else {
-                const apiRes = await fetchCurrentYahooQuote(finalSymbol);
-                if (apiRes.success && apiRes.regularMarketPrice > 0) {
-                  updatedStock.currentPrice = apiRes.regularMarketPrice;
+              } else if (
+                stock.market === Market.TW &&
+                finalSymbol.endsWith(".TW")
+              ) {
+                // Try OTC fallback for MA
+                const otcMaRes = await fetchMADataForSymbol(
+                  stock.ticker + ".TWO",
+                );
+                if (otcMaRes) {
+                  if (otcMaRes.sma20) updatedStock.sma20 = otcMaRes.sma20;
+                  if (otcMaRes.ema50) updatedStock.ema50 = otcMaRes.ema50;
+                  if (otcMaRes.ema100) updatedStock.ema100 = otcMaRes.ema100;
+                  if (!updatedStock.currentPrice && otcMaRes.currentPrice) {
+                    updatedStock.currentPrice = otcMaRes.currentPrice;
+                  }
                 }
               }
-            } catch (error: any) {}
+            } catch (e) {}
+          } catch (error: any) {
+            errorMessages.push(
+              `${finalSymbol} Quote Exception: ${error.message}`,
+            );
+          }
 
-            if (updatedStock.currentPrice && !updatedStock.nav) {
-              updatedStock.nav = updatedStock.currentPrice;
+          try {
+            // Try Official TWSE First
+            let navFound = false;
+            const cleanTicker = stock.ticker.split(".")[0].trim().toUpperCase();
+            const twseEtf = twseEtfList.find((e: any) => e.a === cleanTicker);
+
+            if (twseEtf) {
+              if (
+                twseEtf.e &&
+                (!updatedStock.currentPrice || updatedStock.currentPrice === 0)
+              ) {
+                const mktPrice = parseFloat(twseEtf.e);
+                if (!isNaN(mktPrice) && mktPrice > 0)
+                  updatedStock.currentPrice = mktPrice;
+              }
+              if (twseEtf.f) {
+                const officialNav = parseFloat(twseEtf.f);
+                // 未更新的 ETF 會回 0，寫進去會讓折溢價顯示成 -100%
+                if (!isNaN(officialNav) && officialNav > 0) {
+                  updatedStock.nav = officialNav;
+                  navFound = true;
+                }
+              }
             }
 
-            return updatedStock;
-          })();
+            // 只有 ETF / 基金才有淨值可言。一般個股沒有淨值，
+            // 卻為每一檔都打一次 Yahoo，既拖慢更新又只是把市價填進 nav。
+            const isEtfLike =
+              !!twseEtf || stock.market === Market.FUND || isProbablyFund;
 
-          return Promise.race([processPromise, timeoutPromise]);
+            // Fallback to Yahoo QuoteSummary
+            if (!navFound && isEtfLike) {
+              let usNavFound = false;
+              try {
+                if (isDesktopEnv) {
+                  const res =
+                    await window.electronAPI!.fetchYahooSummary(finalSymbol);
+                  if (res.data && res.data.nav != null) {
+                    updatedStock.nav = res.data.nav;
+                    usNavFound = true;
+                  }
+                } else {
+                  const quoteRes = await fetchCurrentYahooQuote(finalSymbol);
+                  if (quoteRes.success && quoteRes.regularMarketPrice != null) {
+                    if (!updatedStock.nav) updatedStock.nav = quoteRes.regularMarketPrice;
+                    usNavFound = true;
+                  }
+                }
+              } catch (e: any) {
+                errorMessages.push(
+                  `${finalSymbol} NAV Fetch Err: ${e.message}`,
+                );
+              }
+            }
+          } catch (error: any) {
+            errorMessages.push(
+              `${finalSymbol} NAV Block Exception: ${error.message}`,
+            );
+          }
+
+          return updatedStock;
         }),
       );
       setStocks(updatedStocks);
