@@ -39,30 +39,6 @@ export const fetchFullTWMarketPriceMap = async (): Promise<Map<string, { price: 
     return priceMap;
 };
 
-export const fetchFinMindAllCurrentPrices = async (): Promise<Map<string, { price: number; name?: string }>> => {
-    const priceMap = new Map<string, { price: number; name?: string }>();
-    try {
-        const d = new Date();
-        d.setDate(d.getDate() - 5);
-        const startDate = d.toISOString().split('T')[0];
-        const url = `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&start_date=${startDate}`;
-        const res = await fetchWithTimeout(url, undefined, 2000);
-        if (res.ok) {
-            const json = await res.json();
-            if (json.data && Array.isArray(json.data)) {
-                json.data.forEach((item: any) => {
-                    const code = String(item.stock_id || '').trim().toUpperCase();
-                    const price = item.close ?? item.Close ?? 0;
-                    if (code && price > 0) {
-                        priceMap.set(code, { price, name: item.stock_name });
-                    }
-                });
-            }
-        }
-    } catch (e) {}
-    return priceMap;
-};
-
 export const getSharesBeforeDate = (stockId: string, targetDate: string, transactions: Transaction[]): number => {
   if (!targetDate) return 0;
   
@@ -84,11 +60,6 @@ export const getSharesBeforeDate = (stockId: string, targetDate: string, transac
   return shares;
 };
 
-// 記憶體快取 (API JSON 與績效計算快取，有效期限 15 分鐘)
-const urlJsonCache = new Map<string, { data: any; timestamp: number }>();
-const performanceResultCache = new Map<string, { data: any; timestamp: number }>();
-const CACHE_TTL_MS = 15 * 60 * 1000;
-
 export const calculateStockPerformance = async (
     stock: Stock, 
     startDate: string, 
@@ -103,12 +74,6 @@ export const calculateStockPerformance = async (
     error?: string;
     actualStartDate?: string;
 }> => {
-    const cacheKey = `${stock.id || stock.ticker}_${startDate}_${endDate}`;
-    const cached = performanceResultCache.get(cacheKey);
-    if (cached && (Date.now() - cached.timestamp < CACHE_TTL_MS)) {
-        return cached.data;
-    }
-
     try {
         const sDate = new Date(startDate);
         const eDate = new Date(endDate);
@@ -230,7 +195,7 @@ export const calculateStockPerformance = async (
         const priceDiff = endAdj - startAdj;
         const returnRate = startAdj > 0 ? (priceDiff / startAdj) * 100 : 0;
 
-        const perfResult = {
+        return {
             success: true,
             startPrice: startAdj,
             endPrice: endAdj,
@@ -239,8 +204,6 @@ export const calculateStockPerformance = async (
             totalDiff: priceDiff,
             actualStartDate
         };
-        performanceResultCache.set(cacheKey, { data: perfResult, timestamp: Date.now() });
-        return perfResult;
 
     } catch (e: any) {
         return { success: false, error: e.message };
@@ -733,12 +696,16 @@ export const isCorsEnabledUrl = (url: string): boolean =>
 
 type ProxyDef = { build: (url: string) => string; headers?: Record<string, string> };
 
-// 極速專用 JSON CORS 代理 (回應時間 ~200ms)
+// 順序即優先序。r.jina.ai 排第一：2026-07-30 實測只有它同時滿足
+// 「回應帶 Access-Control-Allow-Origin」與「能取回 mis.twse 即時報價」，
+// 其餘公用代理當時分別回 500 / 403 / 429 或直接逾時。
 const PROXY_BUILDERS: ProxyDef[] = [
-    { build: (url: string) => `https://corsproxy.io/?url=${encodeURIComponent(url)}` },
+    { build: (url: string) => `https://r.jina.ai/${url}`, headers: { 'X-Return-Format': 'text' } },
     { build: (url: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}` },
+    { build: (url: string) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}` },
+    { build: (url: string) => `https://corsproxy.io/?url=${encodeURIComponent(url)}` },
     { build: (url: string) => `https://api.cors.lol/?url=${encodeURIComponent(url)}` },
-    { build: (url: string) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}` }
+    { build: (url: string) => `https://whateverorigin.org/get?url=${encodeURIComponent(url)}` }
 ];
 
 // 回應必須是合法 JSON 物件或「陣列」。舊版只接受 '{' 開頭，
@@ -762,74 +729,37 @@ export const parseJsonPayload = (text: string): any => {
     return null;
 };
 
-const promiseAny = <T>(promises: Promise<T>[]): Promise<T> => {
-    return new Promise((resolve, reject) => {
-        let rejectionCount = 0;
-        const errors: any[] = [];
-        if (promises.length === 0) {
-            reject(new Error("No promises passed"));
-            return;
-        }
-        promises.forEach((p, i) => {
-            Promise.resolve(p)
-                .then(resolve)
-                .catch(err => {
-                    errors[i] = err;
-                    rejectionCount++;
-                    if (rejectionCount === promises.length) reject(errors);
-                });
-        });
-    });
-};
-
 export const safeFetchJson = async (targetUrl: string, init?: RequestInit): Promise<any> => {
-    // 優先檢查快取
-    const cached = urlJsonCache.get(targetUrl);
-    if (cached && (Date.now() - cached.timestamp < CACHE_TTL_MS)) {
-        return cached.data;
-    }
-
-    // 1. 先嘗試直連 (逾時 2.5 秒)
     try {
-        const res = await fetchWithTimeout(targetUrl, init, 2500);
+        const res = await fetchWithTimeout(targetUrl, init);
         if (res.ok) {
             const parsed = parseJsonPayload(await res.text());
-            if (parsed !== null) {
-                urlJsonCache.set(targetUrl, { data: parsed, timestamp: Date.now() });
-                return parsed;
-            }
+            if (parsed !== null) return parsed;
         }
     } catch (e) {}
 
     // 本身開放 CORS 的來源直連失敗就是真的失敗，不必再繞代理浪費時間。
     if (isCorsEnabledUrl(targetUrl)) return null;
 
-    // 2. 代理並行競速 (Promise.any) —— 誰先回傳 (2.5s 限時) 誰就獲勝
-    const topProxies = PROXY_BUILDERS.slice(0, 3);
-    const proxyPromises = topProxies.map(async (proxy) => {
-        const merged: RequestInit = proxy.headers
-            ? { ...init, headers: { ...(init?.headers as any), ...proxy.headers } }
-            : init;
-        const res = await fetchWithTimeout(proxy.build(targetUrl), merged, 2500);
-        if (!res.ok) throw new Error('Proxy status error');
-        const text = await res.text();
-        const parsed = parseJsonPayload(text);
-        if (parsed === null) throw new Error('Invalid json');
-        let finalData = parsed;
-        if (parsed.contents && typeof parsed.contents === 'string') {
-            const inner = parseJsonPayload(parsed.contents);
-            if (inner !== null) finalData = inner;
-        }
-        return finalData;
-    });
-
-    try {
-        const fastestData = await promiseAny(proxyPromises);
-        if (fastestData) {
-            urlJsonCache.set(targetUrl, { data: fastestData, timestamp: Date.now() });
-            return fastestData;
-        }
-    } catch (e) {}
+    for (const proxy of PROXY_BUILDERS) {
+        try {
+            const merged: RequestInit = proxy.headers
+                ? { ...init, headers: { ...(init?.headers as any), ...proxy.headers } }
+                : init;
+            const res = await fetchWithTimeout(proxy.build(targetUrl), merged, 15000);
+            if (!res.ok) continue;
+            const text = await res.text();
+            const parsed = parseJsonPayload(text);
+            if (parsed !== null) {
+                // whateverorigin 會把內容包在 { contents: "..." } 裡
+                if (parsed.contents && typeof parsed.contents === 'string') {
+                    const inner = parseJsonPayload(parsed.contents);
+                    if (inner !== null) return inner;
+                }
+                return parsed;
+            }
+        } catch (e) {}
+    }
 
     return null;
 };
@@ -1157,47 +1087,39 @@ export const fetchYahooHistoryUniversal = async (symbol: string, period1: number
         cleanSymbol = `${cleanSymbol}.TW`;
     }
 
-    const isTW = cleanSymbol.endsWith('.TW') || cleanSymbol.endsWith('.TWO') || /^\d{4,6}[A-Za-z]?$/.test(cleanSymbol.split('.')[0]);
-
-    // 對台股標的：FinMind 100% 直連與 Yahoo 並行雙軌競速，誰先回傳誰贏
-    if (isTW) {
-        const rawUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(cleanSymbol)}?period1=${period1}&period2=${period2}&interval=${interval}`;
-        const yahooPromise = (async () => {
-            const res = await corsFetch(rawUrl);
-            if (!res.ok) throw new Error("Yahoo status " + res.status);
-            const json = await res.json();
-            if (json?.chart?.result?.[0]) return json.chart.result[0];
-            throw new Error("Yahoo invalid payload");
-        })();
-
-        const fmPromise = fetchFinMindHistoryAdapter(cleanSymbol, period1, period2, interval);
-
-        try {
-            const fmData = await fmPromise;
-            if (fmData) return fmData;
-        } catch (e) {}
-
-        try {
-            const yData = await yahooPromise;
-            if (yData) return yData;
-        } catch (e) {}
-    }
-
-    // 全球/美股標的：發起 Yahoo Finance 請求
     const rawUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(cleanSymbol)}?period1=${period1}&period2=${period2}&interval=${interval}`;
     try {
         const res = await corsFetch(rawUrl);
-        if (res.ok) {
-            const json = await res.json();
-            if (json?.chart?.result?.[0]) return json.chart.result[0];
+        if (!res.ok) throw new Error("API response error: " + res.status);
+        const json = await res.json();
+        if (json?.chart?.result?.[0]) {
+            return json.chart.result[0];
         }
-    } catch (err: any) {}
+        throw new Error("Yahoo Finance returned invalid payload");
+    } catch (err: any) {
+        // Fallback 1: Try OTC symbol if .TW
+        if (cleanSymbol.endsWith('.TW')) {
+            const fallbackSymbol = cleanSymbol.replace('.TW', '.TWO');
+            const fbUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(fallbackSymbol)}?period1=${period1}&period2=${period2}&interval=${interval}`;
+            try {
+                const fbRes = await corsFetch(fbUrl);
+                if (fbRes.ok) {
+                    const fbJson = await fbRes.json();
+                    if (fbJson?.chart?.result?.[0]) {
+                        return fbJson.chart.result[0];
+                    }
+                }
+            } catch (e) {}
+        }
 
-    // Fallback 嘗試 FinMind 數據轉接器
-    const fmHistory = await fetchFinMindHistoryAdapter(cleanSymbol, period1, period2, interval);
-    if (fmHistory) return fmHistory;
+        // Fallback 2: Try FinMind Open API History Adapter (100% CORS-safe)
+        const fmHistory = await fetchFinMindHistoryAdapter(cleanSymbol, period1, period2, interval);
+        if (fmHistory) {
+            return fmHistory;
+        }
 
-    throw new Error(`無法取得 ${symbol} 歷史數據`);
+        throw err;
+    }
 };
 
 export const fetchFearGreedDirect = async (): Promise<any> => {
@@ -1240,7 +1162,7 @@ export const fetchFundNavByName = async (
     const searchUrl = `https://www.moneydj.com/funddj/ya/yFundSearch.djhtm?a=${encodeURIComponent(name)}`;
 
     try {
-        const res = await fetchWithTimeout(`https://r.jina.ai/${searchUrl}`, undefined, 3500);
+        const res = await fetchWithTimeout(`https://r.jina.ai/${searchUrl}`, undefined, 25000);
         if (!res.ok) return null;
         const md = await res.text();
 

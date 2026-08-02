@@ -276,8 +276,12 @@ export default function PeriodPerformance({ portfolio, transactions, exchangeRat
     }
   };
 
+  const isWebEnv = typeof window !== 'undefined' && !(window as any).electronAPI;
+
   if (!useCache) {
-      calculatePerformance();
+      if (!isWebEnv || forceRefresh > 0) {
+          calculatePerformance();
+      }
   }
   return () => { mounted = false; };
 }, [portfolio, transactions, exchangeRate, forceRefresh]);
@@ -291,7 +295,7 @@ export default function PeriodPerformance({ portfolio, transactions, exchangeRat
              </div>
              <div>
                 <h3 className="font-bold text-slate-800 text-lg">區間績效比較 (估算)</h3>
-                <p className="text-xs text-slate-500 mt-0.5">每週自動結算一次，如有更動可手動更新</p>
+                <p className="text-xs text-slate-500 mt-0.5">雲端網頁版已取消自動背景計算以避免拖慢連線，如需估算請手動點擊更新</p>
              </div>
          </div>
          <div className="flex items-center gap-2">

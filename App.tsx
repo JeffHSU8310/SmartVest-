@@ -30,7 +30,6 @@ import {
   fetchFullTWMarketPriceMap,
   fetchTWRealtimeBatch,
   fetchFundNavByName,
-  fetchFinMindAllCurrentPrices,
 } from "./utils";
 import type { RealtimeQuote } from "./utils";
 import StockManager from "./components/StockManager";
@@ -676,43 +675,42 @@ function App() {
       if (missingStocks.length === 0) return;
 
       setIsGeneratingReports(true);
-      const results = await Promise.all(
-        missingStocks.map(async (stock, idx) => {
-          const attemptKey = `${stock.id}_${reportDate}`;
-          attemptedReports.current.add(attemptKey);
-          
-          setReportProgress(
-            `補產月結報表 ${reportDate}: ${stock.name} (${idx + 1}/${missingStocks.length})`,
-          );
+      const newRecords: StockPerformanceRecord[] = [];
 
-          const result = await calculateStockPerformance(
-            stock,
-            "2000-01-01",
-            reportDate,
-          );
+      for (let i = 0; i < missingStocks.length; i++) {
+        const stock = missingStocks[i];
+        
+        const attemptKey = `${stock.id}_${reportDate}`;
+        attemptedReports.current.add(attemptKey);
+        
+        setReportProgress(
+          `補產月結報表 ${reportDate}: ${stock.name} (${i + 1}/${missingStocks.length})`,
+        );
 
-          if (result.success && result.returnRate !== undefined) {
-            const rec: StockPerformanceRecord = {
-              id: generateId(),
-              stockId: stock.id,
-              recordDate: reportDate,
-              startDate: result.actualStartDate || "2000-01-01",
-              endDate: reportDate,
-              mode: "ADJ",
-              startPrice: result.startPrice || 0,
-              endPrice: result.endPrice || 0,
-              dividends: 0,
-              returnRate: result.returnRate,
-              totalDiff: result.totalDiff || 0,
-              note: "系統自動月結 (還原權值)",
-            };
-            return rec;
-          }
-          return null;
-        })
-      );
+        const result = await calculateStockPerformance(
+          stock,
+          "2000-01-01",
+          reportDate,
+        );
 
-      const newRecords = results.filter((r): r is StockPerformanceRecord => r !== null);
+        if (result.success && result.returnRate !== undefined) {
+          newRecords.push({
+            id: generateId(),
+            stockId: stock.id,
+            recordDate: reportDate,
+            startDate: result.actualStartDate || "2000-01-01",
+            endDate: reportDate,
+            mode: "ADJ",
+            startPrice: result.startPrice || 0,
+            endPrice: result.endPrice || 0,
+            dividends: 0,
+            returnRate: result.returnRate,
+            totalDiff: result.totalDiff || 0,
+            note: "系統自動月結 (還原權值)",
+          });
+        }
+        await new Promise((r) => setTimeout(r, 500));
+      }
 
       if (newRecords.length > 0) {
         setPerformanceRecords((prev) => [...prev, ...newRecords]);
@@ -1884,35 +1882,54 @@ function App() {
         );
       }
 
-      // 平行發起全市場對照表請求 (FinMind 直連 0.2s 優先 + TWSE 備援)
-      let finMindMap: Map<string, { price: number; name?: string }> | null = null;
-      let twRealtimeMap: Map<string, RealtimeQuote> | null = null;
-      let twMarketMap: Map<string, { price: number; name?: string }> | null = null;
+      // 1. Fetch official TWSE ETF NAV data for all Taiwanese ETFs
       let twseEtfList: any[] = [];
-
-      if (!isDesktopEnv) {
-        const twCodes = stocks
-          .filter(
-            (s) =>
-              s.market === Market.TW ||
-              s.market === Market.BOND ||
-              /^[0-9]{4,6}[A-Z]?(\.TW|\.TWO)?$/i.test(s.ticker || ""),
-          )
-          .map((s) => s.ticker);
-
-        const [fmRes, rtRes, mktRes, etfRes] = await Promise.allSettled([
-          fetchFinMindAllCurrentPrices(),
-          twCodes.length > 0 ? fetchTWRealtimeBatch(twCodes) : Promise.resolve(null),
-          fetchFullTWMarketPriceMap(),
-          fetchTWSEEtfDirect()
-        ]);
-
-        if (fmRes.status === "fulfilled") finMindMap = fmRes.value;
-        if (rtRes.status === "fulfilled") twRealtimeMap = rtRes.value;
-        if (mktRes.status === "fulfilled") twMarketMap = mktRes.value;
-        if (etfRes.status === "fulfilled" && etfRes.value?.a1) {
-          twseEtfList = etfRes.value.a1.flatMap((g: any) => g.msgArray || []);
+      try {
+        let twseData = null;
+        if (isDesktopEnv) {
+          const res = await window.electronAPI!.fetchTWSE();
+          if (res.error) errorMessages.push(`TWSE Error: ${res.error}`);
+          if (res.data) twseData = res.data;
+        } else {
+          twseData = await fetchTWSEEtfDirect();
         }
+
+        if (twseData?.a1) {
+          twseEtfList = twseData.a1.flatMap(
+            (group: any) => group.msgArray || [],
+          );
+        }
+      } catch (err: any) {
+        console.error("Failed to fetch official TWSE ETF NAV data", err);
+        errorMessages.push(`TWSE exception: ${err.message}`);
+      }
+
+      // 台股即時報價：一次抓齊所有台股標的。
+      // 必須排在全市場日收盤表之前 —— FinMind / TWSE OpenAPI 的日線要等收盤後
+      // 才有當日資料，盤中拿到的一律是昨天的收盤價，這會讓「更新股價」
+      // 看起來像是把價格改回昨收。mis.twse 才有盤中即時價。
+      let twRealtimeMap: Map<string, RealtimeQuote> | null = null;
+      if (!isDesktopEnv) {
+        try {
+          const twCodes = stocks
+            .filter(
+              (s) =>
+                s.market === Market.TW ||
+                s.market === Market.BOND ||
+                /^[0-9]{4,6}[A-Z]?(\.TW|\.TWO)?$/i.test(s.ticker || ""),
+            )
+            .map((s) => s.ticker);
+          if (twCodes.length > 0) {
+            twRealtimeMap = await fetchTWRealtimeBatch(twCodes);
+          }
+        } catch (e) {}
+      }
+
+      let twMarketMap: Map<string, { price: number; name?: string }> | null = null;
+      if (!isDesktopEnv) {
+        try {
+          twMarketMap = await fetchFullTWMarketPriceMap();
+        } catch (e) {}
       }
 
       // 2. Fetch prices & map NAV
@@ -1921,22 +1938,14 @@ function App() {
           let updatedStock = { ...stock };
 
           const cleanCode = stock.ticker.split(".")[0].trim().toUpperCase();
+
+          // 市價是否已取得。這些快速路徑刻意「不 return」——
+          // 函式尾端還有 ETF 淨值(NAV)區塊要跑，提早返回會讓淨值停在舊值。
           let priceResolved = false;
 
-          // 最優先：FinMind 100% 直連全台股對照表 (0.2 秒極速)
-          const fmMatched = finMindMap?.get(cleanCode);
-          if (!isDesktopEnv && fmMatched && fmMatched.price > 0) {
-            updatedStock.currentPrice = fmMatched.price;
-            if (fmMatched.name && (!updatedStock.name || updatedStock.name === updatedStock.ticker)) {
-              updatedStock.name = fmMatched.name;
-            }
-            updatedStock.lastUpdateDate = getLocalTodayString();
-            priceResolved = true;
-          }
-
-          // 次選：盤中即時價 (mis.twse)
+          // 最優先：盤中即時價
           const live = twRealtimeMap?.get(cleanCode);
-          if (!priceResolved && !isDesktopEnv && live && live.price > 0) {
+          if (!isDesktopEnv && live && live.price > 0) {
             updatedStock.currentPrice = live.price;
             if (live.prevClose > 0) updatedStock.previousClose = live.prevClose;
             if (live.name && (!updatedStock.name || updatedStock.name === updatedStock.ticker)) {
@@ -1947,7 +1956,7 @@ function App() {
             priceResolved = true;
           }
 
-          // 三選：全台股日收盤對照表 O(1) 拿取價格
+          // 次選：全台股日收盤對照表 O(1) 拿取價格 (適用於 GitHub Pages 網頁版)
           if (!priceResolved && !isDesktopEnv && twMarketMap && twMarketMap.has(cleanCode)) {
             const matched = twMarketMap.get(cleanCode)!;
             if (matched.price > 0) {
@@ -2053,35 +2062,34 @@ function App() {
               }
             }
 
-            // Fetch MA Data (SMA20, EMA50, EMA100) 僅在未能從即時/日線表取得現價時作為備援
-            if (!priceResolved) {
-              try {
-                const maRes = await fetchMADataForSymbol(finalSymbol);
-                if (maRes) {
-                  if (maRes.sma20) updatedStock.sma20 = maRes.sma20;
-                  if (maRes.ema50) updatedStock.ema50 = maRes.ema50;
-                  if (maRes.ema100) updatedStock.ema100 = maRes.ema100;
-                  if (!updatedStock.currentPrice && maRes.currentPrice) {
-                    updatedStock.currentPrice = maRes.currentPrice;
-                  }
-                } else if (
-                  stock.market === Market.TW &&
-                  finalSymbol.endsWith(".TW")
-                ) {
-                  const otcMaRes = await fetchMADataForSymbol(
-                    stock.ticker + ".TWO",
-                  );
-                  if (otcMaRes) {
-                    if (otcMaRes.sma20) updatedStock.sma20 = otcMaRes.sma20;
-                    if (otcMaRes.ema50) updatedStock.ema50 = otcMaRes.ema50;
-                    if (otcMaRes.ema100) updatedStock.ema100 = otcMaRes.ema100;
-                    if (!updatedStock.currentPrice && otcMaRes.currentPrice) {
-                      updatedStock.currentPrice = otcMaRes.currentPrice;
-                    }
+            // Fetch MA Data (SMA20, EMA50, EMA100)
+            try {
+              const maRes = await fetchMADataForSymbol(finalSymbol);
+              if (maRes) {
+                if (maRes.sma20) updatedStock.sma20 = maRes.sma20;
+                if (maRes.ema50) updatedStock.ema50 = maRes.ema50;
+                if (maRes.ema100) updatedStock.ema100 = maRes.ema100;
+                if (!updatedStock.currentPrice && maRes.currentPrice) {
+                  updatedStock.currentPrice = maRes.currentPrice;
+                }
+              } else if (
+                stock.market === Market.TW &&
+                finalSymbol.endsWith(".TW")
+              ) {
+                // Try OTC fallback for MA
+                const otcMaRes = await fetchMADataForSymbol(
+                  stock.ticker + ".TWO",
+                );
+                if (otcMaRes) {
+                  if (otcMaRes.sma20) updatedStock.sma20 = otcMaRes.sma20;
+                  if (otcMaRes.ema50) updatedStock.ema50 = otcMaRes.ema50;
+                  if (otcMaRes.ema100) updatedStock.ema100 = otcMaRes.ema100;
+                  if (!updatedStock.currentPrice && otcMaRes.currentPrice) {
+                    updatedStock.currentPrice = otcMaRes.currentPrice;
                   }
                 }
-              } catch (e) {}
-            }
+              }
+            } catch (e) {}
           } catch (error: any) {
             errorMessages.push(
               `${finalSymbol} Quote Exception: ${error.message}`,
