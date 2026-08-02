@@ -15,8 +15,6 @@ import {
   TransactionType,
   GeneralAssetItem,
   CashTransaction,
-  KLineData,
-  TechSettings,
   RecurringCashRule,
   StockPerformanceRecord,
   BudgetItem,
@@ -43,7 +41,6 @@ import DataTools from "./components/DataTools";
 import AssetTrend from "./components/AssetTrend";
 import GeneralAssetOverview from "./components/GeneralAssetOverview";
 import HouseholdExpenses from "./components/HouseholdExpenses";
-import MarketMonitor from "./components/MarketMonitor";
 import BudgetOverview from "./components/BudgetOverview";
 import TenXMarketStrategy from "./components/TenXMarketStrategy";
 import {
@@ -59,7 +56,6 @@ import {
   RefreshCcw,
   Loader2,
   CheckCircle2,
-  CandlestickChart,
   Lock,
   ArrowRight,
   HelpCircle,
@@ -81,58 +77,6 @@ const SAVE_MAX_WAIT_MS = 10000;
 const MOBILE_FILE_NAME = "smartvest_data.json";
 const APP_PASSWORD_KEY = "smartvest_app_password";
 const RECOVERY_KEY_KEY = "smartvest_recovery_key";
-
-const DEFAULT_TECH_SETTINGS: TechSettings = {
-  mas: [
-    { period: 5, visible: true, color: "#fbce07", mode: "SMA" },
-    { period: 10, visible: true, color: "#f97316", mode: "SMA" },
-    { period: 20, visible: true, color: "#a855f7", mode: "SMA" },
-    { period: 60, visible: true, color: "#3b82f6", mode: "SMA" },
-    { period: 120, visible: false, color: "#10b981", mode: "SMA" },
-    { period: 240, visible: false, color: "#94a3b8", mode: "SMA" },
-  ],
-  kd: { period: 9 },
-  macd: { fast: 12, slow: 26, signal: 9 },
-  rsi: { period: 14 },
-  jr: {
-    jPeriod: 14,
-    rsiPeriod: 14,
-    normalizePeriod: 60,
-    smoothMode: "S-EMA",
-    trendPeriod: 9,
-    strategyMode: "SWING",
-    maDefensePeriod: 60,
-    maDefenseMode: "SMA",
-    accJrJThresh: 10,
-    accJrRsiThresh1: 50,
-    accJrRsiThresh2: 45,
-    accCooldownDays: 5,
-    accPriceDropThresh: 0.03,
-    swingKdThreshBuy: 65,
-    swingJrRsiThreshBuy: 65,
-    swingKdThreshBreakout: 80,
-    swingKdThreshOversold: 25,
-    swingJrJThreshOversold: 25,
-    swingJrRsiThreshOversold: 35,
-    swingKdThreshSell: 75,
-    swingJrRsiThreshSell: 70,
-    swingMaStopLossDrop: 0.995,
-    swingKdThreshWeak: 50,
-    swingJrRsiThreshWeak: 50,
-  },
-  bollinger: {
-    middle: { period: 20, color: "#fbce07", visible: false },
-    upper1: { period: 20, stdDev: 2.0, color: "#a855f7", visible: false },
-    lower1: { period: 20, stdDev: 2.0, color: "#a855f7", visible: false },
-    upper2: { period: 20, stdDev: 2.5, color: "#f97316", visible: false },
-    lower2: { period: 20, stdDev: 2.5, color: "#f97316", visible: false },
-  },
-  bbw: { period: 20, stdDev: 2.0, color: "#3b82f6", visible: false },
-  rangeAnalysis: { period: 60, tolerance: 0.03 },
-  bias: { period: 20, mode: "SMA", visible: true },
-  bias2: { period: 60, mode: "SMA", visible: true },
-  horizontalLines: [],
-};
 
 declare global {
   interface Window {
@@ -168,7 +112,6 @@ declare global {
 }
 
 const NAV_ITEMS = [
-  { id: "market", label: "趨勢分析", icon: CandlestickChart },
   { id: "overview", label: "總體資產概況", icon: PieChart },
   { id: "dashboard", label: "(股)資產總覽", icon: LayoutDashboard },
   { id: "trend", label: "報酬走勢", icon: TrendingUp },
@@ -340,7 +283,6 @@ const WelcomeScreen = ({
 function App() {
   const [market, setMarket] = useState<MarketFilter>("ALL");
   const [activeTab, setActiveTab] = useState<
-    | "market"
     | "overview"
     | "dashboard"
     | "transactions"
@@ -439,12 +381,6 @@ function App() {
     NAV_ITEMS.map((i) => i.id),
   );
   const [exchangeRate, setExchangeRate] = useState<number>(32.5);
-  const [marketSymbol, setMarketSymbol] = useState<string | null>(null);
-
-  const [marketData, setMarketData] = useState<KLineData[]>([]);
-  const [techSettings, setTechSettings] = useState<TechSettings>(
-    DEFAULT_TECH_SETTINGS,
-  );
 
   const [showTxForm, setShowTxForm] = useState(false);
   const [editingTx, setEditingTx] = useState<Transaction | null>(null);
@@ -567,18 +503,11 @@ function App() {
   // [修改] 強化初始化邏輯
   useEffect(() => {
     const initData = async () => {
+      // 趨勢分析已移除：清掉舊版留下的大盤日 K 與技術指標設定，
+      // 這兩個 key 動輒數 MB，在 iPhone 有限的 localStorage 上特別佔空間。
       try {
-        const legacyMarket = localStorage.getItem("smartvest_market_data");
-        if (legacyMarket) {
-          const parsed = JSON.parse(legacyMarket);
-          if (Array.isArray(parsed) && parsed.length > 0) setMarketData(parsed);
-        }
-        const legacySettings = localStorage.getItem(
-          "smartvest_tech_settings_v2",
-        );
-        if (legacySettings) {
-          setTechSettings(JSON.parse(legacySettings));
-        }
+        localStorage.removeItem("smartvest_market_data");
+        localStorage.removeItem("smartvest_tech_settings_v2");
       } catch (e) {}
 
       let dataLoadedFromDisk = false;
@@ -1065,8 +994,6 @@ function App() {
       householdTransactions,
       autoSyncStartDate,
       navOrder,
-      marketData,
-      techSettings,
       recurringCashRules,
       performanceRecords,
       budgetItems,
@@ -1088,8 +1015,6 @@ function App() {
       householdTransactions,
       autoSyncStartDate,
       navOrder,
-      marketData,
-      techSettings,
       recurringCashRules,
       performanceRecords,
       budgetItems,
@@ -1183,8 +1108,6 @@ function App() {
     householdTransactions,
     autoSyncStartDate,
     navOrder,
-    marketData,
-    techSettings,
     recurringCashRules,
     performanceRecords,
     budgetItems,
@@ -1205,10 +1128,6 @@ function App() {
     setGeneralAssets(data.generalAssets || []);
     setCashTransactions(data.cashTransactions || []);
     setHouseholdTransactions(data.householdTransactions || []);
-    if (data.marketData && Array.isArray(data.marketData))
-      setMarketData(data.marketData);
-    if (data.techSettings)
-      setTechSettings({ ...DEFAULT_TECH_SETTINGS, ...data.techSettings });
     if (data.recurringCashRules) setRecurringCashRules(data.recurringCashRules);
     if (data.performanceRecords) setPerformanceRecords(data.performanceRecords);
     if (data.budgetItems) setBudgetItems(data.budgetItems);
@@ -2463,7 +2382,6 @@ function App() {
                       onDrop={(e) => handleTabDrop(e, tab.id)}
                       onClick={(e) => {
                         setActiveTab(tab.id as any);
-                        if (tab.id === "market") setMarketSymbol(null);
                         (e.currentTarget as HTMLElement).scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
                       }}
                       className={`flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-full text-xs font-bold transition-all cursor-pointer select-none shrink-0 active:scale-95 ${activeTab === tab.id ? "bg-slate-800 text-white shadow-md" : "bg-white/80 text-slate-600 hover:bg-white border border-slate-200/50"} ${isDragging ? "opacity-50 ring-2 ring-blue-300" : ""}`}
@@ -2495,16 +2413,6 @@ function App() {
 
       <main className="w-full max-w-[1920px] mx-auto px-2 sm:px-4 xl:px-6 space-y-4 pt-2">
         <div className="min-h-[500px]">
-          {activeTab === "market" && (
-            <MarketMonitor
-              data={marketData}
-              onUpdateData={setMarketData}
-              techSettings={techSettings}
-              onUpdateTechSettings={setTechSettings}
-              initialSymbol={marketSymbol}
-              onClearInitialSymbol={() => setMarketSymbol(null)}
-            />
-          )}
           {activeTab === "overview" && (
             <GeneralAssetOverview
               assets={generalAssets}
@@ -2541,10 +2449,6 @@ function App() {
               stockOrder={stockOrder}
               onUpdateOrder={setStockOrder}
               onAddTransaction={handleOpenTxForm}
-              onNavigateToMarket={(sym) => {
-                setMarketSymbol(sym);
-                setActiveTab("market");
-              }}
             />
           )}
           {activeTab === "trend" && (
@@ -2648,8 +2552,6 @@ function App() {
               generalAssets={generalAssets}
               autoSyncStartDate={autoSyncStartDate}
               navOrder={navOrder}
-              marketData={marketData}
-              techSettings={techSettings}
               recurringCashRules={recurringCashRules}
               budgetItems={budgetItems}
               suggestedCategories={customCategories}
@@ -2681,11 +2583,7 @@ function App() {
                 setPerformanceRecords([]);
                 setBudgetItems([]);
                 setAppTitle("SmartVest");
-                setMarketData([]);
-                setTechSettings(DEFAULT_TECH_SETTINGS);
                 setCustomCategories(["市值型ETF", "高股息型ETF", "債券型ETF"]);
-                localStorage.removeItem("smartvest_market_data");
-                localStorage.removeItem("smartvest_tech_settings_v2");
               }}
               onSaveToPC={handleSaveToPC}
               onSaveAsToPC={handleSaveAsToPC}

@@ -1,7 +1,7 @@
 
 import React, { useRef, useState } from 'react';
 import { Download, Upload, FileSpreadsheet, AlertCircle, Trash2, Database, FileJson, HardDriveDownload, FolderOpen, Save, HardDrive, KeyRound, ShieldCheck, Check, X, History, Archive, Cloud, UploadCloud, DownloadCloud, RefreshCw } from 'lucide-react';
-import { Stock, Transaction, Account, Market, TransactionType, AssetSnapshot, GeneralAssetItem, CashTransaction, CSVSettings, GeneralAssetType, AmortizationMethod, LoanType, KLineData, TechSettings, RecurringCashRule, BudgetItem } from '../types';
+import { Stock, Transaction, Account, Market, TransactionType, AssetSnapshot, GeneralAssetItem, CashTransaction, CSVSettings, GeneralAssetType, AmortizationMethod, LoanType, RecurringCashRule, BudgetItem } from '../types';
 import { generateId, downloadCSVTemplate, exportToCSV } from '../utils';
 import { getGitHubSyncConfig, saveGitHubSyncConfig, syncToGitHubGist, restoreFromGitHubGist } from '../githubSync';
 
@@ -17,9 +17,7 @@ interface Props {
   generalAssets?: GeneralAssetItem[];
   autoSyncStartDate?: string;
   navOrder?: string[];
-  
-  marketData?: KLineData[];
-  techSettings?: TechSettings;
+
   recurringCashRules?: RecurringCashRule[];
   budgetItems?: BudgetItem[];
   suggestedCategories?: string[];
@@ -36,8 +34,6 @@ interface Props {
     householdTransactions?: CashTransaction[], 
     autoSyncStartDate?: string,
     navOrder?: string[],
-    marketData?: KLineData[],
-    techSettings?: TechSettings,
     recurringCashRules?: RecurringCashRule[],
     budgetItems?: BudgetItem[],
     customCategories?: string[]
@@ -73,7 +69,7 @@ interface Props {
 
 const DataTools: React.FC<Props> = ({ 
   transactions, stocks, accounts, assetHistory = [], cashTransactions = [], householdTransactions = [],
-  stockOrder, appTitle, generalAssets, autoSyncStartDate, navOrder, marketData, techSettings, recurringCashRules, budgetItems, suggestedCategories,
+  stockOrder, appTitle, generalAssets, autoSyncStartDate, navOrder, recurringCashRules, budgetItems, suggestedCategories,
   onImportJSON, onImportCSV, onClearAllData,
   onSaveToPC, onSaveAsToPC, onOpenFromPC, currentFileName,
   getExportData, onFlushSave,
@@ -196,7 +192,7 @@ const DataTools: React.FC<Props> = ({
         stocks, transactions, accounts, assetHistory,
         cashTransactions, householdTransactions, stockOrder,
         appTitle, generalAssets, autoSyncStartDate, navOrder,
-        marketData, techSettings, recurringCashRules, budgetItems,
+        recurringCashRules, budgetItems,
         customCategories: suggestedCategories
     };
     const data = JSON.stringify(payload, null, 2);

@@ -27,12 +27,27 @@ export const saveGitHubSyncConfig = (config: GitHubSyncConfig): void => {
   localStorage.setItem(SYNC_CONFIG_KEY, JSON.stringify(config));
 };
 
+// 趨勢分析已移除，這些資料不再使用，備份不需要也不應該再帶著它們走。
+// 大盤日 K（1987 年起、上萬筆）動輒 3MB 以上，在 iPhone Safari 約 5MB 的
+// localStorage 上限（且以 UTF-16 計算，字元數要乘 2）下特別佔空間。
+// smartvest_data_v2 內的欄位：
+const OBSOLETE_DATA_FIELDS = ['marketData', 'techSettings'];
+// 舊版獨立存放的 localStorage key：
+const OBSOLETE_STORAGE_KEYS = ['smartvest_market_data', 'smartvest_tech_settings_v2'];
+
+// 移除單一存檔物件中已淘汰的欄位（不改動原物件）
+const stripObsoleteFields = (obj: Record<string, any>): Record<string, any> => {
+  const cleaned = { ...obj };
+  for (const k of OBSOLETE_DATA_FIELDS) delete cleaned[k];
+  return cleaned;
+};
+
 // 打包目前系統中所有的本地記帳數據
 export const exportAllAppData = (): Record<string, any> => {
   const backup: Record<string, any> = {};
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
-    if (key && key !== SYNC_CONFIG_KEY) {
+    if (key && key !== SYNC_CONFIG_KEY && !OBSOLETE_STORAGE_KEYS.includes(key)) {
       try {
         const val = localStorage.getItem(key);
         backup[key] = val ? JSON.parse(val) : null;
@@ -40,6 +55,9 @@ export const exportAllAppData = (): Record<string, any> => {
         backup[key] = localStorage.getItem(key);
       }
     }
+  }
+  if (backup.smartvest_data_v2 && typeof backup.smartvest_data_v2 === 'object') {
+    backup.smartvest_data_v2 = stripObsoleteFields(backup.smartvest_data_v2);
   }
   return {
     version: '1.0.0',
@@ -53,12 +71,6 @@ export interface ImportResult {
   warning?: string;
   error?: string;
 }
-
-// 可以再從 API 重新抓回來的大型快取。
-// iPhone Safari 的 localStorage 上限約 5MB，而且是以 UTF-16 計算
-// （字元數要乘 2），光是大盤日 K（1987 年起、上萬筆）就會佔掉 3MB 以上，
-// 因此空間不夠時優先捨棄它，保住無法重建的帳務資料。
-const REBUILDABLE_CACHE_KEYS = ['marketData'];
 
 // smartvest_backup_00.json ~ smartvest_backup_NN.json
 const isChunkFileName = (name: string): boolean =>
@@ -82,8 +94,6 @@ export const importAllAppData = (backupPayload: Record<string, any>): ImportResu
       ? backupPayload.data
       : backupPayload;
 
-  const droppedCaches: string[] = [];
-
   // 1. 核心帳務資料（交易、記帳、持股）——這些重建不回來，必須優先寫入
   try {
     let core: any = dataMap.smartvest_data_v2;
@@ -99,25 +109,8 @@ export const importAllAppData = (backupPayload: Record<string, any>): ImportResu
       }
 
       if (coreObj && typeof coreObj === 'object') {
-        let written = false;
-        try {
-          localStorage.setItem('smartvest_data_v2', JSON.stringify(coreObj));
-          written = true;
-        } catch (e) {
-          if (!isQuotaError(e)) throw e;
-        }
-
-        // 空間不足：拿掉可重建的快取再寫一次，讓帳務資料仍然完整還原
-        if (!written) {
-          const slim: Record<string, any> = { ...coreObj };
-          for (const k of REBUILDABLE_CACHE_KEYS) {
-            if (slim[k] !== undefined) {
-              delete slim[k];
-              droppedCaches.push(k);
-            }
-          }
-          localStorage.setItem('smartvest_data_v2', JSON.stringify(slim));
-        }
+        // 舊備份可能還帶著趨勢分析的大盤日 K／技術指標設定，一律丟掉再寫入
+        localStorage.setItem('smartvest_data_v2', JSON.stringify(stripObsoleteFields(coreObj)));
       } else {
         localStorage.setItem('smartvest_data_v2', typeof core === 'string' ? core : JSON.stringify(core));
       }
@@ -137,6 +130,7 @@ export const importAllAppData = (backupPayload: Record<string, any>): ImportResu
   const failedKeys: string[] = [];
   Object.keys(dataMap).forEach(key => {
     if (key === 'smartvest_data_v2') return;
+    if (OBSOLETE_STORAGE_KEYS.includes(key)) return;
     const val = dataMap[key];
     if (val === null || val === undefined) return;
     try {
@@ -147,11 +141,8 @@ export const importAllAppData = (backupPayload: Record<string, any>): ImportResu
   });
 
   let warning: string | undefined;
-  if (droppedCaches.length > 0) {
-    warning = '因手機儲存空間有限，已略過大盤走勢快取（下次開啟大盤圖時會自動重新下載，帳務資料完全不受影響）。';
-  }
   if (failedKeys.length > 0) {
-    warning = (warning ? warning + ' ' : '') + `另有 ${failedKeys.length} 項次要設定未寫入。`;
+    warning = `有 ${failedKeys.length} 項次要設定未寫入。`;
   }
 
   return { success: true, warning };

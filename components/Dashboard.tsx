@@ -72,7 +72,6 @@ interface Props {
     accountId?: string,
     strategy?: string,
   ) => void;
-  onNavigateToMarket?: (symbol: string) => void;
 }
 
 const COLORS = [
@@ -270,7 +269,6 @@ const Dashboard: React.FC<Props> = ({
   stockOrder,
   onUpdateOrder,
   onAddTransaction,
-  onNavigateToMarket,
 }) => {
   const [selectedStockId, setSelectedStockId] = useState<string | null>(null);
   const [filterAccountId, setFilterAccountId] = useState<string[]>(["ALL"]); // Changed to Array
@@ -1674,15 +1672,8 @@ const Dashboard: React.FC<Props> = ({
                           )}
                         </div>
                         <div className="flex flex-wrap items-center gap-2 mt-2">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (onNavigateToMarket) {
-                                onNavigateToMarket(item.stock.ticker);
-                              }
-                            }}
-                            className="text-xs font-bold text-slate-500 hover:text-blue-600 bg-slate-100 hover:bg-blue-50 px-2 py-1 rounded-md font-mono border border-slate-200 flex items-center gap-1 transition-colors cursor-pointer"
-                            title="前往趨勢分析K線圖"
+                          <span
+                            className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-1 rounded-md font-mono border border-slate-200 flex items-center gap-1"
                           >
                             {item.stock.ticker}
                             {item.stock.market === Market.TW &&
@@ -1696,7 +1687,7 @@ const Dashboard: React.FC<Props> = ({
                                     : "上市"}
                                 </span>
                               )}
-                          </button>
+                          </span>
                           {holdingAccountsInfo.map((acc, idx) => (
                             <button
                               key={`${item.stock.id}-acc-${idx}`}
