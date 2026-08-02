@@ -2062,34 +2062,35 @@ function App() {
               }
             }
 
-            // Fetch MA Data (SMA20, EMA50, EMA100)
-            try {
-              const maRes = await fetchMADataForSymbol(finalSymbol);
-              if (maRes) {
-                if (maRes.sma20) updatedStock.sma20 = maRes.sma20;
-                if (maRes.ema50) updatedStock.ema50 = maRes.ema50;
-                if (maRes.ema100) updatedStock.ema100 = maRes.ema100;
-                if (!updatedStock.currentPrice && maRes.currentPrice) {
-                  updatedStock.currentPrice = maRes.currentPrice;
-                }
-              } else if (
-                stock.market === Market.TW &&
-                finalSymbol.endsWith(".TW")
-              ) {
-                // Try OTC fallback for MA
-                const otcMaRes = await fetchMADataForSymbol(
-                  stock.ticker + ".TWO",
-                );
-                if (otcMaRes) {
-                  if (otcMaRes.sma20) updatedStock.sma20 = otcMaRes.sma20;
-                  if (otcMaRes.ema50) updatedStock.ema50 = otcMaRes.ema50;
-                  if (otcMaRes.ema100) updatedStock.ema100 = otcMaRes.ema100;
-                  if (!updatedStock.currentPrice && otcMaRes.currentPrice) {
-                    updatedStock.currentPrice = otcMaRes.currentPrice;
+            // Fetch MA Data (SMA20, EMA50, EMA100) 僅在未取得現價時作為備援
+            if (!priceResolved) {
+              try {
+                const maRes = await fetchMADataForSymbol(finalSymbol);
+                if (maRes) {
+                  if (maRes.sma20) updatedStock.sma20 = maRes.sma20;
+                  if (maRes.ema50) updatedStock.ema50 = maRes.ema50;
+                  if (maRes.ema100) updatedStock.ema100 = maRes.ema100;
+                  if (!updatedStock.currentPrice && maRes.currentPrice) {
+                    updatedStock.currentPrice = maRes.currentPrice;
+                  }
+                } else if (
+                  stock.market === Market.TW &&
+                  finalSymbol.endsWith(".TW")
+                ) {
+                  const otcMaRes = await fetchMADataForSymbol(
+                    stock.ticker + ".TWO",
+                  );
+                  if (otcMaRes) {
+                    if (otcMaRes.sma20) updatedStock.sma20 = otcMaRes.sma20;
+                    if (otcMaRes.ema50) updatedStock.ema50 = otcMaRes.ema50;
+                    if (otcMaRes.ema100) updatedStock.ema100 = otcMaRes.ema100;
+                    if (!updatedStock.currentPrice && otcMaRes.currentPrice) {
+                      updatedStock.currentPrice = otcMaRes.currentPrice;
+                    }
                   }
                 }
-              }
-            } catch (e) {}
+              } catch (e) {}
+            }
           } catch (error: any) {
             errorMessages.push(
               `${finalSymbol} Quote Exception: ${error.message}`,
@@ -2119,6 +2120,11 @@ function App() {
                   navFound = true;
                 }
               }
+            }
+
+            if (!navFound && updatedStock.currentPrice && updatedStock.currentPrice > 0) {
+              if (!updatedStock.nav) updatedStock.nav = updatedStock.currentPrice;
+              navFound = true;
             }
 
             // 只有 ETF / 基金才有淨值可言。一般個股沒有淨值，
