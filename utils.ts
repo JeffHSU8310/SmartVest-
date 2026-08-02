@@ -60,6 +60,11 @@ export const getSharesBeforeDate = (stockId: string, targetDate: string, transac
   return shares;
 };
 
+// 記憶體快取 (API JSON 與績效計算快取，有效期限 15 分鐘)
+const urlJsonCache = new Map<string, { data: any; timestamp: number }>();
+const performanceResultCache = new Map<string, { data: any; timestamp: number }>();
+const CACHE_TTL_MS = 15 * 60 * 1000;
+
 export const calculateStockPerformance = async (
     stock: Stock, 
     startDate: string, 
@@ -74,6 +79,12 @@ export const calculateStockPerformance = async (
     error?: string;
     actualStartDate?: string;
 }> => {
+    const cacheKey = `${stock.id || stock.ticker}_${startDate}_${endDate}`;
+    const cached = performanceResultCache.get(cacheKey);
+    if (cached && (Date.now() - cached.timestamp < CACHE_TTL_MS)) {
+        return cached.data;
+    }
+
     try {
         const sDate = new Date(startDate);
         const eDate = new Date(endDate);
@@ -195,7 +206,7 @@ export const calculateStockPerformance = async (
         const priceDiff = endAdj - startAdj;
         const returnRate = startAdj > 0 ? (priceDiff / startAdj) * 100 : 0;
 
-        return {
+        const perfResult = {
             success: true,
             startPrice: startAdj,
             endPrice: endAdj,
@@ -204,6 +215,8 @@ export const calculateStockPerformance = async (
             totalDiff: priceDiff,
             actualStartDate
         };
+        performanceResultCache.set(cacheKey, { data: perfResult, timestamp: Date.now() });
+        return perfResult;
 
     } catch (e: any) {
         return { success: false, error: e.message };
@@ -730,11 +743,20 @@ export const parseJsonPayload = (text: string): any => {
 };
 
 export const safeFetchJson = async (targetUrl: string, init?: RequestInit): Promise<any> => {
+    // 優先檢查快取
+    const cached = urlJsonCache.get(targetUrl);
+    if (cached && (Date.now() - cached.timestamp < CACHE_TTL_MS)) {
+        return cached.data;
+    }
+
     try {
-        const res = await fetchWithTimeout(targetUrl, init);
+        const res = await fetchWithTimeout(targetUrl, init, 6000);
         if (res.ok) {
             const parsed = parseJsonPayload(await res.text());
-            if (parsed !== null) return parsed;
+            if (parsed !== null) {
+                urlJsonCache.set(targetUrl, { data: parsed, timestamp: Date.now() });
+                return parsed;
+            }
         }
     } catch (e) {}
 
@@ -746,17 +768,19 @@ export const safeFetchJson = async (targetUrl: string, init?: RequestInit): Prom
             const merged: RequestInit = proxy.headers
                 ? { ...init, headers: { ...(init?.headers as any), ...proxy.headers } }
                 : init;
-            const res = await fetchWithTimeout(proxy.build(targetUrl), merged, 15000);
+            const res = await fetchWithTimeout(proxy.build(targetUrl), merged, 6000);
             if (!res.ok) continue;
             const text = await res.text();
             const parsed = parseJsonPayload(text);
             if (parsed !== null) {
+                let finalData = parsed;
                 // whateverorigin 會把內容包在 { contents: "..." } 裡
                 if (parsed.contents && typeof parsed.contents === 'string') {
                     const inner = parseJsonPayload(parsed.contents);
-                    if (inner !== null) return inner;
+                    if (inner !== null) finalData = inner;
                 }
-                return parsed;
+                urlJsonCache.set(targetUrl, { data: finalData, timestamp: Date.now() });
+                return finalData;
             }
         } catch (e) {}
     }

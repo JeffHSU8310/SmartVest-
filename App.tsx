@@ -675,42 +675,43 @@ function App() {
       if (missingStocks.length === 0) return;
 
       setIsGeneratingReports(true);
-      const newRecords: StockPerformanceRecord[] = [];
+      const results = await Promise.all(
+        missingStocks.map(async (stock, idx) => {
+          const attemptKey = `${stock.id}_${reportDate}`;
+          attemptedReports.current.add(attemptKey);
+          
+          setReportProgress(
+            `補產月結報表 ${reportDate}: ${stock.name} (${idx + 1}/${missingStocks.length})`,
+          );
 
-      for (let i = 0; i < missingStocks.length; i++) {
-        const stock = missingStocks[i];
-        
-        const attemptKey = `${stock.id}_${reportDate}`;
-        attemptedReports.current.add(attemptKey);
-        
-        setReportProgress(
-          `補產月結報表 ${reportDate}: ${stock.name} (${i + 1}/${missingStocks.length})`,
-        );
+          const result = await calculateStockPerformance(
+            stock,
+            "2000-01-01",
+            reportDate,
+          );
 
-        const result = await calculateStockPerformance(
-          stock,
-          "2000-01-01",
-          reportDate,
-        );
+          if (result.success && result.returnRate !== undefined) {
+            const rec: StockPerformanceRecord = {
+              id: generateId(),
+              stockId: stock.id,
+              recordDate: reportDate,
+              startDate: result.actualStartDate || "2000-01-01",
+              endDate: reportDate,
+              mode: "ADJ",
+              startPrice: result.startPrice || 0,
+              endPrice: result.endPrice || 0,
+              dividends: 0,
+              returnRate: result.returnRate,
+              totalDiff: result.totalDiff || 0,
+              note: "系統自動月結 (還原權值)",
+            };
+            return rec;
+          }
+          return null;
+        })
+      );
 
-        if (result.success && result.returnRate !== undefined) {
-          newRecords.push({
-            id: generateId(),
-            stockId: stock.id,
-            recordDate: reportDate,
-            startDate: result.actualStartDate || "2000-01-01",
-            endDate: reportDate,
-            mode: "ADJ",
-            startPrice: result.startPrice || 0,
-            endPrice: result.endPrice || 0,
-            dividends: 0,
-            returnRate: result.returnRate,
-            totalDiff: result.totalDiff || 0,
-            note: "系統自動月結 (還原權值)",
-          });
-        }
-        await new Promise((r) => setTimeout(r, 500));
-      }
+      const newRecords = results.filter((r): r is StockPerformanceRecord => r !== null);
 
       if (newRecords.length > 0) {
         setPerformanceRecords((prev) => [...prev, ...newRecords]);
@@ -2062,34 +2063,35 @@ function App() {
               }
             }
 
-            // Fetch MA Data (SMA20, EMA50, EMA100)
-            try {
-              const maRes = await fetchMADataForSymbol(finalSymbol);
-              if (maRes) {
-                if (maRes.sma20) updatedStock.sma20 = maRes.sma20;
-                if (maRes.ema50) updatedStock.ema50 = maRes.ema50;
-                if (maRes.ema100) updatedStock.ema100 = maRes.ema100;
-                if (!updatedStock.currentPrice && maRes.currentPrice) {
-                  updatedStock.currentPrice = maRes.currentPrice;
-                }
-              } else if (
-                stock.market === Market.TW &&
-                finalSymbol.endsWith(".TW")
-              ) {
-                // Try OTC fallback for MA
-                const otcMaRes = await fetchMADataForSymbol(
-                  stock.ticker + ".TWO",
-                );
-                if (otcMaRes) {
-                  if (otcMaRes.sma20) updatedStock.sma20 = otcMaRes.sma20;
-                  if (otcMaRes.ema50) updatedStock.ema50 = otcMaRes.ema50;
-                  if (otcMaRes.ema100) updatedStock.ema100 = otcMaRes.ema100;
-                  if (!updatedStock.currentPrice && otcMaRes.currentPrice) {
-                    updatedStock.currentPrice = otcMaRes.currentPrice;
+            // Fetch MA Data (SMA20, EMA50, EMA100) 僅在未能從即時/日線表取得現價時作為備援
+            if (!priceResolved) {
+              try {
+                const maRes = await fetchMADataForSymbol(finalSymbol);
+                if (maRes) {
+                  if (maRes.sma20) updatedStock.sma20 = maRes.sma20;
+                  if (maRes.ema50) updatedStock.ema50 = maRes.ema50;
+                  if (maRes.ema100) updatedStock.ema100 = maRes.ema100;
+                  if (!updatedStock.currentPrice && maRes.currentPrice) {
+                    updatedStock.currentPrice = maRes.currentPrice;
+                  }
+                } else if (
+                  stock.market === Market.TW &&
+                  finalSymbol.endsWith(".TW")
+                ) {
+                  const otcMaRes = await fetchMADataForSymbol(
+                    stock.ticker + ".TWO",
+                  );
+                  if (otcMaRes) {
+                    if (otcMaRes.sma20) updatedStock.sma20 = otcMaRes.sma20;
+                    if (otcMaRes.ema50) updatedStock.ema50 = otcMaRes.ema50;
+                    if (otcMaRes.ema100) updatedStock.ema100 = otcMaRes.ema100;
+                    if (!updatedStock.currentPrice && otcMaRes.currentPrice) {
+                      updatedStock.currentPrice = otcMaRes.currentPrice;
+                    }
                   }
                 }
-              }
-            } catch (e) {}
+              } catch (e) {}
+            }
           } catch (error: any) {
             errorMessages.push(
               `${finalSymbol} Quote Exception: ${error.message}`,
