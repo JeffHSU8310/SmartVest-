@@ -58,6 +58,18 @@ export default function PeriodPerformance({ portfolio, transactions, exchangeRat
       setLoading(true);
       try {
       const now = new Date();
+
+      // 各階段計時。打開瀏覽器主控台（F12 -> Console）就能看到每一段實際
+      // 花多久，不必再靠猜的找瓶頸。
+      const perfT0 =
+        typeof performance !== "undefined" ? performance.now() : Date.now();
+      const lap = (label: string) => {
+        const t =
+          typeof performance !== "undefined" ? performance.now() : Date.now();
+        console.log(
+          `[區間績效] ${label}: ${((t - perfT0) / 1000).toFixed(1)}s`,
+        );
+      };
       
       // Month
       const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
@@ -124,6 +136,10 @@ export default function PeriodPerformance({ portfolio, transactions, exchangeRat
 
       const symbolsToFetch = uniqueSymbols.filter(sym => !symbolPriceMap.has(sym) || forceRefresh > 0);
 
+      lap(
+        `持股整理完成（相關標的 ${relevantPortfolio.length} 檔，需預抓K線 ${uniqueSymbols.length} 檔，其中快取已有 ${uniqueSymbols.length - symbolsToFetch.length} 檔、需連網 ${symbolsToFetch.length} 檔）`,
+      );
+
       if (symbolsToFetch.length > 0) {
         await Promise.all(
           symbolsToFetch.map(async (sym) => {
@@ -158,6 +174,13 @@ export default function PeriodPerformance({ portfolio, transactions, exchangeRat
           });
           localStorage.setItem(KLINE_CACHE_KEY, JSON.stringify({ timestamp: Date.now(), data: dataToSave }));
         } catch (e) {}
+
+        const succeeded = symbolsToFetch.filter(sym => symbolPriceMap.has(sym)).length;
+        lap(
+          `K線預抓完成（${succeeded}/${symbolsToFetch.length} 檔成功，${symbolsToFetch.length - succeeded} 檔逾時或查無資料）`,
+        );
+      } else {
+        lap("K線預抓略過（全部命中快取）");
       }
 
       const formatDateStr = (d: Date) => `${d.getFullYear()}-${(d.getMonth()+1).toString().padStart(2,'0')}-${d.getDate().toString().padStart(2,'0')}`;
@@ -219,6 +242,10 @@ export default function PeriodPerformance({ portfolio, transactions, exchangeRat
         else missingKeys.push(key);
       });
 
+      lap(
+        `所需(代號,日期)彙整完成（共需 ${neededKeys.size} 組，快取命中 ${resolvedPrices.size} 組，需個別補抓 ${missingKeys.length} 組）`,
+      );
+
       if (missingKeys.length > 0) {
         await Promise.all(
           missingKeys.map(async (key) => {
@@ -234,6 +261,7 @@ export default function PeriodPerformance({ portfolio, transactions, exchangeRat
             } catch (e) {}
           })
         );
+        lap(`個別補抓完成（${missingKeys.length} 組）`);
       }
 
       // 到這裡所有價格都已在記憶體中，後續計算不再有任何網路等待。
@@ -346,6 +374,8 @@ export default function PeriodPerformance({ portfolio, transactions, exchangeRat
         };
       }
       
+      lap("純記憶體計算完成");
+
       if (mounted) {
         setData(results);
         localStorage.setItem('periodPerformanceCache', JSON.stringify({ hash, data: results }));
