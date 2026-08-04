@@ -696,9 +696,20 @@ export const isCorsEnabledUrl = (url: string): boolean =>
 
 type ProxyDef = { build: (url: string) => string; headers?: Record<string, string> };
 
-// 順序即優先序。r.jina.ai 排第一：2026-07-30 實測只有它同時滿足
-// 「回應帶 Access-Control-Allow-Origin」與「能取回 mis.twse 即時報價」，
-// 其餘公用代理當時分別回 500 / 403 / 429 或直接逾時。
+// 這些代理是「同時競速」而非依序輪詢的，因此順序不再代表優先序。
+//
+// 2026-08-04 實測（Yahoo 歷史 K 線）：
+//   r.jina.ai          200；內容「有時」是乾淨 JSON，有時被包成 markdown
+//                      （"Title:… Markdown Content:{json}"）—— 不穩定
+//   api.allorigins.win 200，乾淨 JSON，約 3 秒
+//   api.codetabs.com   521 / corsproxy.io 403(需付費)
+//   api.cors.lol       429 / whateverorigin.org 400
+// 對 mis.twse 盤中報價則只有 r.jina.ai 通得過（allorigins 回 408 逾時）。
+//
+// 也就是說沒有任何單一代理對所有來源都可靠。過去「依序輪詢 + 只看 HTTP
+// 狀態碼」有兩個問題：一是 r.jina.ai 偶發的 markdown 包裝會以 200 假成功
+// 中斷整條 fallback，呼叫端 res.json() 直接拋錯；二是 6 個代理中有 4 個
+// 已失效，序列走完最差要 90 秒。現在改為並行競速並驗證內容。
 const PROXY_BUILDERS: ProxyDef[] = [
     { build: (url: string) => `https://r.jina.ai/${url}`, headers: { 'X-Return-Format': 'text' } },
     { build: (url: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}` },
@@ -707,6 +718,101 @@ const PROXY_BUILDERS: ProxyDef[] = [
     { build: (url: string) => `https://api.cors.lol/?url=${encodeURIComponent(url)}` },
     { build: (url: string) => `https://whateverorigin.org/get?url=${encodeURIComponent(url)}` }
 ];
+
+// 單一代理的逾時。並行競速下不需要留長逾時給壞掉的代理，
+// 因為不會有人在等它們。
+const PROXY_TIMEOUT_MS = 9000;
+
+// 記住上次真正成功的代理，下次先單獨試它一次（省下同時打 6 個的流量，
+// 也降低被公用代理限流的機率）；失敗才退回全體競速。
+const PROXY_HEALTH_KEY = 'smartvest_proxy_health_v1';
+
+const getPreferredProxyIndex = (): number => {
+    try {
+        const raw = localStorage.getItem(PROXY_HEALTH_KEY);
+        if (raw === null) return -1;
+        const idx = parseInt(raw, 10);
+        return (!isNaN(idx) && idx >= 0 && idx < PROXY_BUILDERS.length) ? idx : -1;
+    } catch (e) { return -1; }
+};
+
+const rememberProxy = (index: number): void => {
+    try { localStorage.setItem(PROXY_HEALTH_KEY, String(index)); } catch (e) {}
+};
+
+// 「第一個回傳有效結果者獲勝」。刻意不用 Promise.any（ES2021，
+// 本專案 tsconfig 的 lib 只到 ES2020），且 Promise.any 的語意是
+// 「第一個 fulfilled」，無法表達「fulfilled 但內容無效要繼續等別人」。
+const raceFirstValid = <T,>(tasks: Array<() => Promise<T | null>>): Promise<T | null> => {
+    return new Promise((resolve) => {
+        let pending = tasks.length;
+        let settled = false;
+        if (pending === 0) { resolve(null); return; }
+        tasks.forEach((task) => {
+            const finishOne = (value: T | null) => {
+                if (settled) return;
+                if (value !== null && value !== undefined) {
+                    settled = true;
+                    resolve(value);
+                    return;
+                }
+                pending -= 1;
+                if (pending === 0) { settled = true; resolve(null); }
+            };
+            task().then(finishOne).catch(() => finishOne(null));
+        });
+    });
+};
+
+// 透過單一代理取回目標網址並驗證內容。內容驗證是重點：
+// 代理回 200 不代表拿到的是我們要的東西。
+const fetchViaProxy = async (
+    proxyIndex: number,
+    targetUrl: string,
+    init: RequestInit | undefined,
+): Promise<string | null> => {
+    const proxy = PROXY_BUILDERS[proxyIndex];
+    if (!proxy) return null;
+    const merged: RequestInit = proxy.headers
+        ? { ...init, headers: { ...(init?.headers as any), ...proxy.headers } }
+        : (init as RequestInit);
+    const res = await fetchWithTimeout(proxy.build(targetUrl), merged, PROXY_TIMEOUT_MS);
+    if (!res.ok) return null;
+    const text = await res.text();
+    // 必須真的能解析出 JSON 才算成功，否則 r.jina.ai 的 markdown 包裝
+    // 會被誤判為成功而中斷 fallback。
+    const parsed = parseJsonPayload(text);
+    if (parsed === null) return null;
+    rememberProxy(proxyIndex);
+    // whateverorigin 會把內容包在 { contents: "..." } 裡
+    if (parsed.contents && typeof parsed.contents === 'string') {
+        const inner = parseJsonPayload(parsed.contents);
+        if (inner !== null) return JSON.stringify(inner);
+    }
+    return JSON.stringify(parsed);
+};
+
+// 先試記憶中的好代理，失敗再全體競速。回傳已驗證過的 JSON 字串。
+const fetchThroughProxies = async (
+    targetUrl: string,
+    init?: RequestInit,
+): Promise<string | null> => {
+    const preferred = getPreferredProxyIndex();
+    if (preferred >= 0) {
+        try {
+            const quick = await fetchViaProxy(preferred, targetUrl, init);
+            if (quick !== null) return quick;
+        } catch (e) { /* 落到下方的全體競速 */ }
+    }
+
+    return raceFirstValid(
+        PROXY_BUILDERS.map((_, idx) => () =>
+            idx === preferred
+                ? Promise.resolve(null)          // 剛剛已經單獨試過了
+                : fetchViaProxy(idx, targetUrl, init)
+        )
+    );
+};
 
 // 回應必須是合法 JSON 物件或「陣列」。舊版只接受 '{' 開頭，
 // 導致 TWSE / TPEx OpenAPI 這類回傳陣列的來源一律被判定為失敗。
@@ -741,27 +847,8 @@ export const safeFetchJson = async (targetUrl: string, init?: RequestInit): Prom
     // 本身開放 CORS 的來源直連失敗就是真的失敗，不必再繞代理浪費時間。
     if (isCorsEnabledUrl(targetUrl)) return null;
 
-    for (const proxy of PROXY_BUILDERS) {
-        try {
-            const merged: RequestInit = proxy.headers
-                ? { ...init, headers: { ...(init?.headers as any), ...proxy.headers } }
-                : init;
-            const res = await fetchWithTimeout(proxy.build(targetUrl), merged, 15000);
-            if (!res.ok) continue;
-            const text = await res.text();
-            const parsed = parseJsonPayload(text);
-            if (parsed !== null) {
-                // whateverorigin 會把內容包在 { contents: "..." } 裡
-                if (parsed.contents && typeof parsed.contents === 'string') {
-                    const inner = parseJsonPayload(parsed.contents);
-                    if (inner !== null) return inner;
-                }
-                return parsed;
-            }
-        } catch (e) {}
-    }
-
-    return null;
+    const text = await fetchThroughProxies(targetUrl, init);
+    return text === null ? null : parseJsonPayload(text);
 };
 
 export type RealtimeQuote = { price: number; prevClose: number; name?: string; time?: string; isLive: boolean };
@@ -825,28 +912,39 @@ export const fetchTWRealtimeBatch = async (tickers: string[]): Promise<Map<strin
     if (codes.length === 0) return result;
 
     const CHUNK = 25; // 每批 25 檔 => 50 個 ex_ch，避免單一請求過長
+    const batches: string[][] = [];
     for (let i = 0; i < codes.length; i += CHUNK) {
-        const batch = codes.slice(i, i + CHUNK);
-        const exCh = batch.map(c => `tse_${c}.tw`).concat(batch.map(c => `otc_${c}.tw`)).join('|');
-        const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${exCh}&json=1&delay=0`;
-
-        try {
-            const json = await safeFetchJson(url);
-            const arr: any[] = json?.msgArray || [];
-            arr.forEach(item => {
-                const quote = pickRealtimePrice(item);
-                if (!quote) return;
-                const code = String(item.c).trim().toUpperCase();
-                // 同一代號若上市與上櫃都有回應，保留帶有盤中價的那一筆
-                const prev = result.get(code);
-                if (!prev || (!prev.isLive && quote.isLive)) {
-                    result.set(code, quote);
-                }
-            });
-        } catch (e) {
-            console.warn('fetchTWRealtimeBatch 批次失敗', e);
-        }
+        batches.push(codes.slice(i, i + CHUNK));
     }
+
+    // 各批次彼此獨立，改為並行。原本是逐批 await，持股一多就要把每批
+    // 的網路等待時間相加（例如 50 檔 = 2 批，等於等兩趟代理來回）。
+    const batchResults = await Promise.all(
+        batches.map(async (batch) => {
+            const exCh = batch.map(c => `tse_${c}.tw`).concat(batch.map(c => `otc_${c}.tw`)).join('|');
+            const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${exCh}&json=1&delay=0`;
+            try {
+                const json = await safeFetchJson(url);
+                return (json?.msgArray || []) as any[];
+            } catch (e) {
+                console.warn('fetchTWRealtimeBatch 批次失敗', e);
+                return [] as any[];
+            }
+        })
+    );
+
+    batchResults.forEach(arr => {
+        arr.forEach(item => {
+            const quote = pickRealtimePrice(item);
+            if (!quote) return;
+            const code = String(item.c).trim().toUpperCase();
+            // 同一代號若上市與上櫃都有回應，保留帶有盤中價的那一筆
+            const prev = result.get(code);
+            if (!prev || (!prev.isLive && quote.isLive)) {
+                result.set(code, quote);
+            }
+        });
+    });
 
     return result;
 };
@@ -861,9 +959,14 @@ export const fetchTWStockOfficialPrice = async (ticker: string): Promise<{ price
     return null;
 };
 
+// 注意：所有呼叫端取回後都是呼叫 res.json()。舊版只檢查 proxyRes.ok
+// 就直接回傳，導致 r.jina.ai 那種「200 但內容是 markdown 包裝」的回應
+// 被當成成功，呼叫端 res.json() 必定拋錯，而真正可用的代理永遠輪不到。
+// 現在改為驗證過內容才回傳，並以已驗證的 JSON 字串重建 Response，
+// 呼叫端介面完全不變。
 export const corsFetch = async (targetUrl: string, init?: RequestInit): Promise<Response> => {
     try {
-        const directRes = await fetchWithTimeout(targetUrl, init, 12000);
+        const directRes = await fetchWithTimeout(targetUrl, init, 8000);
         if (directRes.ok) return directRes;
         // 開放 CORS 的來源直連拿到非 2xx 就是來源本身的答案，
         // 繞代理只會多花數十秒後得到同樣結果。
@@ -874,14 +977,12 @@ export const corsFetch = async (targetUrl: string, init?: RequestInit): Promise<
         }
     }
 
-    for (const proxy of PROXY_BUILDERS) {
-        try {
-            const merged: RequestInit = proxy.headers
-                ? { ...init, headers: { ...(init?.headers as any), ...proxy.headers } }
-                : init;
-            const proxyRes = await fetchWithTimeout(proxy.build(targetUrl), merged, 15000);
-            if (proxyRes.ok) return proxyRes;
-        } catch (e) {}
+    const text = await fetchThroughProxies(targetUrl, init);
+    if (text !== null) {
+        return new Response(text, {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        });
     }
 
     throw new Error(`無法連線至目標 URL: ${targetUrl}`);
@@ -1369,6 +1470,28 @@ export const downloadCSVTemplate = () => {
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
+};
+
+// 現在是否為台股盤中（台北時間週一~週五 09:00–13:30）。
+// 用來判斷「拿不到即時價而退回日收盤」到底是正常的收盤後行為，
+// 還是盤中真的抓失敗、需要提醒使用者的情況。
+export const isTwMarketOpenNow = (d: Date = new Date()): boolean => {
+    try {
+        const parts = new Intl.DateTimeFormat('en-US', {
+            timeZone: 'Asia/Taipei',
+            weekday: 'short',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false,
+        }).formatToParts(d);
+        const get = (t: string) => parts.find(p => p.type === t)?.value || '';
+        const weekday = get('weekday');
+        if (weekday === 'Sat' || weekday === 'Sun') return false;
+        const minutes = parseInt(get('hour'), 10) * 60 + parseInt(get('minute'), 10);
+        return minutes >= 9 * 60 && minutes <= 13 * 60 + 30;
+    } catch (e) {
+        return false;
+    }
 };
 
 export const getLocalTodayString = () => {

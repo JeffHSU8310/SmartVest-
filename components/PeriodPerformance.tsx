@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { PortfolioItem, Transaction, TransactionType } from '../types';
-import { fetchHistoricalPrice, fetchYahooHistoryUniversal } from '../utils';
+import { fetchHistoricalPrice, fetchYahooHistoryUniversal, withTimeout } from '../utils';
 import { Activity, Clock, TrendingUp, TrendingDown, Loader2, RefreshCw } from 'lucide-react';
 
 interface Props {
@@ -8,6 +8,11 @@ interface Props {
   transactions: Transaction[];
   exchangeRate: number;
 }
+
+// 單一標的預抓 450 天 K 線的時間上限
+const KLINE_PREFETCH_TIMEOUT_MS = 15000;
+// 快取沒涵蓋到、需要個別補抓的單一日期價格的時間上限
+const MISSING_PRICE_TIMEOUT_MS = 10000;
 
 export default function PeriodPerformance({ portfolio, transactions, exchangeRate }: Props) {
   const [loading, setLoading] = useState(false);
@@ -118,7 +123,12 @@ export default function PeriodPerformance({ portfolio, transactions, exchangeRat
         await Promise.all(
           symbolsToFetch.map(async (sym) => {
             try {
-              const historyData = await fetchYahooHistoryUniversal(sym, period1Sec, nowSec + 86400, '1d');
+              // 加上時間上限：外部來源失聯時，單一標的的歷史抓取會層層退路
+              // （主代號 → .TWO → FinMind），累積起來可以拖到一分鐘以上。
+              const historyData = await withTimeout(
+                fetchYahooHistoryUniversal(sym, period1Sec, nowSec + 86400, '1d'),
+                KLINE_PREFETCH_TIMEOUT_MS,
+              );
               let result = historyData?.chart?.result?.[0] || (historyData?.indicators?.quote?.[0] ? historyData : null);
               if (result && result.indicators?.quote?.[0] && result.timestamp) {
                 const quote = result.indicators.quote[0];
@@ -145,26 +155,88 @@ export default function PeriodPerformance({ portfolio, transactions, exchangeRat
         } catch (e) {}
       }
 
-      const getHistoricalPriceFast = async (symbol: string, targetDateStr: string): Promise<number | null> => {
+      const formatDateStr = (d: Date) => `${d.getFullYear()}-${(d.getMonth()+1).toString().padStart(2,'0')}-${d.getDate().toString().padStart(2,'0')}`;
+
+      // 預抓失敗的標的（例如沒有掛牌代號的基金）再查幾次都是同樣結果 ——
+      // fetchHistoricalPrice 走的也是同一組來源。過去沒有記錄這件事，
+      // 同一檔會在 4 個期間 × 起訖點總共重複走完整代理鏈 8 次，
+      // 這正是區間績效動輒卡上百秒的主因。這裡記下來直接略過。
+      const unresolvableSymbols = new Set<string>(
+        uniqueSymbols.filter(sym => !symbolPriceMap.has(sym))
+      );
+
+      // 從已預抓的 K 線表就地查價（往前找最多 14 天的最近交易日），
+      // 純記憶體運算、不觸網。
+      const lookupFromCache = (symbol: string, targetDateStr: string): number | null => {
         const dateMap = symbolPriceMap.get(symbol);
-        if (dateMap) {
-          const tDate = new Date(targetDateStr);
-          for (let d = 0; d < 14; d++) {
-            const checkD = new Date(tDate);
-            checkD.setDate(tDate.getDate() - d);
-            const checkStr = checkD.toISOString().split('T')[0];
-            if (dateMap.has(checkStr)) {
-              return dateMap.get(checkStr)!;
-            }
+        if (!dateMap) return null;
+        const tDate = new Date(targetDateStr);
+        for (let d = 0; d < 14; d++) {
+          const checkD = new Date(tDate);
+          checkD.setDate(tDate.getDate() - d);
+          const checkStr = checkD.toISOString().split('T')[0];
+          if (dateMap.has(checkStr)) {
+            return dateMap.get(checkStr)!;
           }
         }
-        return await fetchHistoricalPrice(symbol, targetDateStr);
+        return null;
+      };
+
+      // 把所有期間 × 所有標的需要的 (代號, 日期) 一次列出來，快取查不到的
+      // 才補打網路，而且是「去重後一次並行」。原本是在雙層迴圈裡逐一 await，
+      // 等於把每一次網路等待時間全部相加。
+      const nowStrForPrefetch = formatDateStr(new Date());
+      const neededKeys = new Set<string>();
+      for (const period of periods) {
+        const startStr = formatDateStr(period.startDate);
+        const endStr = formatDateStr(period.endDate);
+        const effectiveEnd = endStr > nowStrForPrefetch ? nowStrForPrefetch : endStr;
+        for (const item of relevantPortfolio) {
+          const symbol = item.stock.ticker || item.stock.id;
+          if (unresolvableSymbols.has(symbol)) continue;
+          neededKeys.add(`${symbol}|${startStr}`);
+          neededKeys.add(`${symbol}|${effectiveEnd}`);
+        }
+      }
+
+      const resolvedPrices = new Map<string, number>();
+      const missingKeys: string[] = [];
+      neededKeys.forEach(key => {
+        const sepAt = key.lastIndexOf('|');
+        const sym = key.slice(0, sepAt);
+        const dateStr = key.slice(sepAt + 1);
+        const cached = lookupFromCache(sym, dateStr);
+        if (cached !== null) resolvedPrices.set(key, cached);
+        else missingKeys.push(key);
+      });
+
+      if (missingKeys.length > 0) {
+        await Promise.all(
+          missingKeys.map(async (key) => {
+            const sepAt = key.lastIndexOf('|');
+            const sym = key.slice(0, sepAt);
+            const dateStr = key.slice(sepAt + 1);
+            try {
+              const price = await withTimeout(
+                fetchHistoricalPrice(sym, dateStr),
+                MISSING_PRICE_TIMEOUT_MS,
+              );
+              if (price !== null && price !== undefined) resolvedPrices.set(key, price);
+            } catch (e) {}
+          })
+        );
+      }
+
+      // 到這裡所有價格都已在記憶體中，後續計算不再有任何網路等待。
+      const getHistoricalPriceFast = (symbol: string, targetDateStr: string): number | null => {
+        const hit = resolvedPrices.get(`${symbol}|${targetDateStr}`);
+        if (hit !== undefined) return hit;
+        return lookupFromCache(symbol, targetDateStr);
       };
       
       const results: any = { '1W': null, '1M': null, '6M': null, '1Y': null };
 
       for (const period of periods) {
-        const formatDateStr = (d: Date) => `${d.getFullYear()}-${(d.getMonth()+1).toString().padStart(2,'0')}-${d.getDate().toString().padStart(2,'0')}`;
         const startDateStr = formatDateStr(period.startDate);
         const endDateStr = formatDateStr(period.endDate);
         
@@ -205,7 +277,7 @@ export default function PeriodPerformance({ portfolio, transactions, exchangeRat
                    endPrice = item.marketValue / item.totalShares;
                } else {
                    const effectiveEndDateStr = endDateStr > nowStr ? nowStr : endDateStr;
-                   endPrice = await getHistoricalPriceFast(symbol, effectiveEndDateStr);
+                   endPrice = getHistoricalPriceFast(symbol, effectiveEndDateStr);
                }
 
                if (endPrice !== null) {
@@ -223,7 +295,7 @@ export default function PeriodPerformance({ portfolio, transactions, exchangeRat
            const { shares: startShares, txs: startTxs } = getSharesAndTxs(startDateStr);
            
            if (startShares > 0) {
-               const startPrice = await getHistoricalPriceFast(symbol, startDateStr);
+               const startPrice = getHistoricalPriceFast(symbol, startDateStr);
                if (startPrice !== null) {
                    beginningValue += (startShares * startPrice) * exRate;
                } else {

@@ -32,6 +32,7 @@ import {
   fetchFundNavByName,
   fetchHistoricalPrice,
   withTimeout,
+  isTwMarketOpenNow,
 } from "./utils";
 import type { RealtimeQuote } from "./utils";
 import StockManager from "./components/StockManager";
@@ -75,6 +76,11 @@ const STORAGE_KEY = "smartvest_data_v2";
 // 兩者都必須存在：只有 debounce 的話，使用者持續操作會讓計時器被無限重設，
 // localStorage 永遠停在編輯開始前的舊快照，雲端備份也就跟著上傳舊資料。
 const SAVE_DEBOUNCE_MS = 10000;
+// 單一標的更新股價的時間上限，避免外部行情來源失聯時整個更新無止盡等待
+const PRICE_UPDATE_PER_STOCK_MS = 20000;
+// 更新開始前的共用批次抓取（ETF 淨值表、即時報價、全市場日收盤表）的時間上限。
+// 這些是「有就更好」的資料，任一失敗都有後續退路，不該拖住整個更新。
+const PRICE_UPDATE_PREFETCH_MS = 12000;
 const SAVE_MAX_WAIT_MS = 10000;
 const MOBILE_FILE_NAME = "smartvest_data.json";
 const APP_PASSWORD_KEY = "smartvest_app_password";
@@ -2076,59 +2082,67 @@ function App() {
         );
       }
 
-      // 1. Fetch official TWSE ETF NAV data for all Taiwanese ETFs
+      // 1. 共用批次資料：ETF 官方淨值表、台股盤中即時報價、全市場日收盤表。
+      //
+      // 這三者彼此不相依，過去是一段一段 await，等於把三段網路等待時間
+      // 直接相加（光是 TWSE OpenAPI 的全市場日收盤表就要 8 秒以上）。
+      // 改為一次並行，只花其中最慢的那一段。
+      //
+      // 即時報價的順序意義仍然保留在使用端：後面取價時一律「先看即時報價、
+      // 再退回日收盤表」。FinMind / TWSE OpenAPI 的日線要等收盤後才有當日
+      // 資料，盤中拿到的一律是昨天的收盤價，只有 mis.twse 有盤中即時價。
       let twseEtfList: any[] = [];
-      try {
-        let twseData = null;
-        if (isDesktopEnv) {
-          const res = await window.electronAPI!.fetchTWSE();
-          if (res.error) errorMessages.push(`TWSE Error: ${res.error}`);
-          if (res.data) twseData = res.data;
-        } else {
-          twseData = await fetchTWSEEtfDirect();
-        }
-
-        if (twseData?.a1) {
-          twseEtfList = twseData.a1.flatMap(
-            (group: any) => group.msgArray || [],
-          );
-        }
-      } catch (err: any) {
-        console.error("Failed to fetch official TWSE ETF NAV data", err);
-        errorMessages.push(`TWSE exception: ${err.message}`);
-      }
-
-      // 台股即時報價：一次抓齊所有台股標的。
-      // 必須排在全市場日收盤表之前 —— FinMind / TWSE OpenAPI 的日線要等收盤後
-      // 才有當日資料，盤中拿到的一律是昨天的收盤價，這會讓「更新股價」
-      // 看起來像是把價格改回昨收。mis.twse 才有盤中即時價。
       let twRealtimeMap: Map<string, RealtimeQuote> | null = null;
-      if (!isDesktopEnv) {
-        try {
-          const twCodes = stocks
-            .filter(
-              (s) =>
-                s.market === Market.TW ||
-                s.market === Market.BOND ||
-                /^[0-9]{4,6}[A-Z]?(\.TW|\.TWO)?$/i.test(s.ticker || ""),
-            )
-            .map((s) => s.ticker);
-          if (twCodes.length > 0) {
-            twRealtimeMap = await fetchTWRealtimeBatch(twCodes);
-          }
-        } catch (e) {}
-      }
-
       let twMarketMap: Map<string, { price: number; name?: string }> | null = null;
-      if (!isDesktopEnv) {
-        try {
-          twMarketMap = await fetchFullTWMarketPriceMap();
-        } catch (e) {}
+
+      const twCodes = stocks
+        .filter(
+          (s) =>
+            s.market === Market.TW ||
+            s.market === Market.BOND ||
+            /^[0-9]{4,6}[A-Z]?(\.TW|\.TWO)?$/i.test(s.ticker || ""),
+        )
+        .map((s) => s.ticker);
+
+      const [twseDataResult, realtimeResult, marketResult] = await Promise.all([
+        (async () => {
+          try {
+            if (isDesktopEnv) {
+              const res = await window.electronAPI!.fetchTWSE();
+              if (res.error) errorMessages.push(`TWSE Error: ${res.error}`);
+              return res.data || null;
+            }
+            return await withTimeout(fetchTWSEEtfDirect(), PRICE_UPDATE_PREFETCH_MS);
+          } catch (err: any) {
+            console.error("Failed to fetch official TWSE ETF NAV data", err);
+            errorMessages.push(`TWSE exception: ${err.message}`);
+            return null;
+          }
+        })(),
+        !isDesktopEnv && twCodes.length > 0
+          ? withTimeout(fetchTWRealtimeBatch(twCodes), PRICE_UPDATE_PREFETCH_MS).catch(() => null)
+          : Promise.resolve(null),
+        !isDesktopEnv
+          ? withTimeout(fetchFullTWMarketPriceMap(), PRICE_UPDATE_PREFETCH_MS).catch(() => null)
+          : Promise.resolve(null),
+      ]);
+
+      if (twseDataResult?.a1) {
+        twseEtfList = twseDataResult.a1.flatMap(
+          (group: any) => group.msgArray || [],
+        );
       }
+      twRealtimeMap = realtimeResult;
+      twMarketMap = marketResult;
+
+      // 盤中卻拿不到即時價的台股標的。這些標的只能退回日收盤表（＝昨收），
+      // 使用者需要知道，否則會誤以為更新成功、實際看到的卻是舊價格。
+      const staleIntradayTickers: string[] = [];
+      // 逾時、完全沒能更新到的標的
+      const timedOutTickers: string[] = [];
 
       // 2. Fetch prices & map NAV
-      const updatedStocks = await Promise.all(
-        stocks.map(async (stock) => {
+      const updateOneStock = async (stock: Stock): Promise<Stock> => {
           let updatedStock = { ...stock };
 
           const cleanCode = stock.ticker.split(".")[0].trim().toUpperCase();
@@ -2159,7 +2173,12 @@ function App() {
                 updatedStock.name = matched.name;
               }
               updatedStock.lastUpdateDate = getLocalTodayString();
+              updatedStock.marketState = "CLOSED";
               priceResolved = true;
+              // 盤中走到這裡代表即時報價失敗，拿到的是日收盤（昨收），要告知使用者
+              if (isTwMarketOpenNow()) {
+                staleIntradayTickers.push(stock.ticker);
+              }
             }
           }
 
@@ -2256,34 +2275,32 @@ function App() {
               }
             }
 
-            // Fetch MA Data (SMA20, EMA50, EMA100)
-            try {
-              const maRes = await fetchMADataForSymbol(finalSymbol);
-              if (maRes) {
-                if (maRes.sma20) updatedStock.sma20 = maRes.sma20;
-                if (maRes.ema50) updatedStock.ema50 = maRes.ema50;
-                if (maRes.ema100) updatedStock.ema100 = maRes.ema100;
-                if (!updatedStock.currentPrice && maRes.currentPrice) {
+            // 最後手段：前面所有來源都沒拿到價格時，才用 300 天歷史 K 線
+            // 的最後一筆收盤價補上。
+            //
+            // 這裡原本是「無條件」為每一檔股票抓一次 300 天 K 線（台股失敗
+            // 還會再補抓一次 .TWO）來計算 sma20/ema50/ema100，即使價格早就
+            // 由 mis.twse 即時報價取得也照抓。但自從趨勢分析與動態平衡策略
+            // 移除後，那三個欄位已經沒有任何畫面在讀，等於每次更新都為死資料
+            // 付出全部標的的歷史 K 線流量，是股價更新最主要的耗時來源。
+            if (!updatedStock.currentPrice || updatedStock.currentPrice <= 0) {
+              try {
+                const maRes = await fetchMADataForSymbol(finalSymbol);
+                if (maRes?.currentPrice) {
                   updatedStock.currentPrice = maRes.currentPrice;
-                }
-              } else if (
-                stock.market === Market.TW &&
-                finalSymbol.endsWith(".TW")
-              ) {
-                // Try OTC fallback for MA
-                const otcMaRes = await fetchMADataForSymbol(
-                  stock.ticker + ".TWO",
-                );
-                if (otcMaRes) {
-                  if (otcMaRes.sma20) updatedStock.sma20 = otcMaRes.sma20;
-                  if (otcMaRes.ema50) updatedStock.ema50 = otcMaRes.ema50;
-                  if (otcMaRes.ema100) updatedStock.ema100 = otcMaRes.ema100;
-                  if (!updatedStock.currentPrice && otcMaRes.currentPrice) {
+                } else if (
+                  stock.market === Market.TW &&
+                  finalSymbol.endsWith(".TW")
+                ) {
+                  const otcMaRes = await fetchMADataForSymbol(
+                    stock.ticker + ".TWO",
+                  );
+                  if (otcMaRes?.currentPrice) {
                     updatedStock.currentPrice = otcMaRes.currentPrice;
                   }
                 }
-              }
-            } catch (e) {}
+              } catch (e) {}
+            }
           } catch (error: any) {
             errorMessages.push(
               `${finalSymbol} Quote Exception: ${error.message}`,
@@ -2351,15 +2368,46 @@ function App() {
           }
 
           return updatedStock;
+      };
+
+      // 每一檔各自設定時間上限。外部行情來源全數失聯時（例如使用者網路
+      // 不通、或公用代理同時掛掉），過去會讓整個更新無止盡地等下去、
+      // 連完成訊息都不會出現。逾時的標的保留原本價格，其餘照常更新，
+      // 讓「股價更新」永遠會在可預期的時間內結束並回報結果。
+      const updatedStocks = await Promise.all(
+        stocks.map(async (stock) => {
+          const done = await withTimeout(updateOneStock(stock), PRICE_UPDATE_PER_STOCK_MS);
+          if (done) return done;
+          timedOutTickers.push(stock.ticker);
+          return stock;
         }),
       );
       setStocks(updatedStocks);
 
+      // 盤中卻只拿到日收盤價時明確告知，不要讓使用者以為看到的是即時價
+      const staleNotice =
+        staleIntradayTickers.length > 0
+          ? `\n\n⚠️ 以下 ${staleIntradayTickers.length} 檔目前為盤中，但即時報價來源暫時無法取得，` +
+            `顯示的是最近一個交易日的收盤價，並非即時價：\n` +
+            staleIntradayTickers.join("、") +
+            `\n（稍後再按一次「股價更新」通常就會取得即時價）`
+          : "";
+
+      const timeoutNotice =
+        timedOutTickers.length > 0
+          ? `\n\n⏱️ 以下 ${timedOutTickers.length} 檔在時限內未能取得報價，已保留原本的價格：\n` +
+            timedOutTickers.join("、")
+          : "";
+
       if (errorMessages.length > 0) {
         alert(
           "部分股價更新失敗 (Partial Update Error):\n\n" +
-            errorMessages.join("\n"),
+            errorMessages.join("\n") +
+            staleNotice +
+            timeoutNotice,
         );
+      } else if (staleNotice || timeoutNotice) {
+        alert("股價與資產淨值已更新。" + staleNotice + timeoutNotice);
       } else {
         alert("🎉 所有持股即時股價與資產淨值已成功更新！");
       }
