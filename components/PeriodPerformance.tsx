@@ -18,11 +18,10 @@ export default function PeriodPerformance({ portfolio, transactions, exchangeRat
   const [loading, setLoading] = useState(false);
   const [forceRefresh, setForceRefresh] = useState(0);
   const [data, setData] = useState<{
-    '1W': { returnPercent: number, returnValue: number, label: string } | null;
     '1M': { returnPercent: number, returnValue: number, label: string } | null;
     '6M': { returnPercent: number, returnValue: number, label: string } | null;
     '1Y': { returnPercent: number, returnValue: number, label: string } | null;
-  }>({ '1W': null, '1M': null, '6M': null, '1Y': null });
+  }>({ '1M': null, '6M': null, '1Y': null });
 
   useEffect(() => {
     let mounted = true;
@@ -60,34 +59,20 @@ export default function PeriodPerformance({ portfolio, transactions, exchangeRat
       try {
       const now = new Date();
       
-      // Week (Mon-Fri)
-      const currentDayOfWeek = now.getDay() === 0 ? 7 : now.getDay();
-      const lastMonday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - currentDayOfWeek - 6);
-      const lastFriday = new Date(lastMonday.getFullYear(), lastMonday.getMonth(), lastMonday.getDate() + 4);
-      const prevMonday = new Date(lastMonday.getFullYear(), lastMonday.getMonth(), lastMonday.getDate() - 7);
-      const prevFriday = new Date(prevMonday.getFullYear(), prevMonday.getMonth(), prevMonday.getDate() + 4);
-
       // Month
       const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
       const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0);
-      const prevMonthStart = new Date(now.getFullYear(), now.getMonth() - 2, 1);
-      const prevMonthEnd = new Date(now.getFullYear(), now.getMonth() - 1, 0);
 
       // Half Year
       const currentHalf = now.getMonth() < 6 ? 1 : 2; // In July (month=6), currentHalf is 2
       const lastHalfStart = currentHalf === 1 ? new Date(now.getFullYear() - 1, 6, 1) : new Date(now.getFullYear(), 0, 1);
       const lastHalfEnd = currentHalf === 1 ? new Date(now.getFullYear() - 1, 11, 31) : new Date(now.getFullYear(), 5, 30);
-      const prevHalfStart = currentHalf === 1 ? new Date(now.getFullYear() - 1, 0, 1) : new Date(now.getFullYear() - 1, 6, 1);
-      const prevHalfEnd = currentHalf === 1 ? new Date(now.getFullYear() - 1, 5, 30) : new Date(now.getFullYear() - 1, 11, 31);
 
       // Year
       const currentYearStart = new Date(now.getFullYear(), 0, 1);
       const currentYearEnd = new Date(now.getFullYear(), 11, 31);
-      const prevYearStart = new Date(now.getFullYear() - 1, 0, 1);
-      const prevYearEnd = new Date(now.getFullYear() - 1, 11, 31);
 
       const periods = [
-        { key: '1W', label: `${lastMonday.getMonth()+1}/${lastMonday.getDate()}~${lastFriday.getMonth()+1}/${lastFriday.getDate()}`, startDate: lastMonday, endDate: lastFriday },
         { key: '1M', label: `${lastMonthStart.getMonth() + 1}月`, startDate: lastMonthStart, endDate: lastMonthEnd },
         { key: '6M', label: `${lastHalfStart.getFullYear()}${lastHalfStart.getMonth()===0?'上':'下'}半年度`, startDate: lastHalfStart, endDate: lastHalfEnd },
         { key: '1Y', label: `${currentYearStart.getFullYear()}年度`, startDate: currentYearStart, endDate: currentYearEnd }
@@ -234,7 +219,7 @@ export default function PeriodPerformance({ portfolio, transactions, exchangeRat
         return lookupFromCache(symbol, targetDateStr);
       };
       
-      const results: any = { '1W': null, '1M': null, '6M': null, '1Y': null };
+      const results: any = { '1M': null, '6M': null, '1Y': null };
 
       for (const period of periods) {
         const startDateStr = formatDateStr(period.startDate);
@@ -330,7 +315,7 @@ export default function PeriodPerformance({ portfolio, transactions, exchangeRat
         const capitalBase = beginningValue + totalCashIn;
         const returnPercent = capitalBase > 0 ? (periodReturn / capitalBase) * 100 : 0;
         
-        results[period.key as '1W'|'1M'|'6M'|'1Y'] = {
+        results[period.key as '1M'|'6M'|'1Y'] = {
             returnPercent,
             returnValue: periodReturn,
             label: period.label
@@ -388,12 +373,12 @@ export default function PeriodPerformance({ portfolio, transactions, exchangeRat
          </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-5">
-         {(['1W', '1M', '6M', '1Y'] as const).map(key => {
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
+         {(['1M', '6M', '1Y'] as const).map(key => {
              const periodData = data[key];
              const isLoaded = periodData !== null;
              const isPositive = isLoaded && periodData.returnPercent >= 0;
-             const labels = { '1W': '上週績效', '1M': '上個月績效', '6M': '上半年度績效', '1Y': '今年度績效' };
+             const labels = { '1M': '上個月績效', '6M': '上半年度績效', '1Y': '今年度績效' };
              
              return (
                  <div key={key} className="bg-slate-50 p-5 rounded-2xl border border-slate-100 flex flex-col items-center justify-center min-h-[120px]">
