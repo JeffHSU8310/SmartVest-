@@ -30,6 +30,8 @@ import {
   fetchFullTWMarketPriceMap,
   fetchTWRealtimeBatch,
   fetchFundNavByName,
+  fetchHistoricalPrice,
+  withTimeout,
 } from "./utils";
 import type { RealtimeQuote } from "./utils";
 import StockManager from "./components/StockManager";
@@ -835,150 +837,342 @@ function App() {
     isInitialized,
   ]);
 
+  // FORCE HEAL ALL WRONG TRANSACTIONS (STOCK + CASH + HOUSE)
+  useEffect(() => {
+    if (!isInitialized || transactions.length === 0) return;
+
+    let needsUpdate = false;
+    const nextTxs = transactions.map(tx => {
+        if (tx.date < '2026-08-01') return tx;
+        if (!tx.isDCA) return tx;
+        const stock = stocks.find(s => s.id === tx.stockId);
+        if (!stock) return tx;
+
+        const isUS = stock.currency === "USD" || (stock.market as string) === "US" || stock.market === Market.US;
+        if (isUS && tx.type === TransactionType.BUY) {
+            const principalUSD = tx.price * tx.quantity;
+            if (stock.monthlyTarget && stock.dcaSettings) {
+                let totalDates = 0;
+                stock.dcaSettings.forEach(s => { totalDates += s.dates.length });
+                if (totalDates > 0) {
+                    const amountPerDeduction = stock.monthlyTarget / totalDates;
+                    // If principal USD is suspiciously close to the TWD amount, it's a bug!
+                    if (Math.abs(principalUSD - amountPerDeduction) < 10) {
+                        const correctRate = (tx.exchangeRate && tx.exchangeRate > 25) ? tx.exchangeRate : ((exchangeRate && exchangeRate > 25) ? exchangeRate : 32.5);
+                        const effectiveAmount = amountPerDeduction / correctRate;
+                        const correctQuantity = effectiveAmount / tx.price;
+                        needsUpdate = true;
+                        return {
+                            ...tx,
+                            quantity: correctQuantity,
+                            exchangeRate: correctRate
+                        };
+                    }
+                }
+            }
+        }
+        return tx;
+    });
+
+    if (needsUpdate) {
+        console.log("FORCE HEALED WRONG DCA TRANSACTIONS!");
+        setTransactions(nextTxs);
+    }
+
+    // Also sweep all cash and house txs to make sure they match the stock tx
+    let cashNeedsUpdate = false;
+    const nextCash = cashTransactions.map(c => {
+        if (c.date < '2026-08-01') return c;
+        let stx = null;
+        if (c.sourceTransactionId) {
+            stx = nextTxs.find(t => t.id === c.sourceTransactionId);
+        }
+        if (!stx) {
+            stx = nextTxs.find(t => {
+                const s = stocks.find(stock => stock.id === t.stockId);
+                return s && c.note && c.note.includes(s.name) && c.note.includes('(自動)') && (c.date === t.date || c.date === t.settlementDate) && t.isDCA;
+            });
+        }
+        if (!stx) return c;
+        const stock = stocks.find(s => s.id === stx.stockId);
+        if (!stock) return c;
+
+        const isUS = stock.currency === "USD" || (stock.market as string) === "US" || stock.market === Market.US;
+        const principal = stx.price * stx.quantity;
+        const fee = stx.fee || 0;
+        let totalAmount = principal;
+
+        if (stx.type === TransactionType.BUY) {
+            totalAmount = principal + fee;
+        } else if (stx.type === TransactionType.SELL) {
+            totalAmount = principal - fee - (stx.tax || 0);
+        } else if (stx.type === TransactionType.DIVIDEND) {
+            totalAmount = principal - fee;
+        }
+
+        if (isUS) {
+            totalAmount = Math.round(totalAmount * (stx.exchangeRate || exchangeRate));
+        } else {
+            totalAmount = Math.round(totalAmount);
+        }
+
+        if (c.amount !== totalAmount && totalAmount > 0) {
+            console.log("HEALING CASH TX:", c.id, "Old amount:", c.amount, "New amount:", totalAmount, "Stock TX ID:", stx.id);
+            cashNeedsUpdate = true;
+
+            return { ...c, amount: totalAmount };
+        }
+        return c;
+    });
+    if (cashNeedsUpdate) {
+        setCashTransactions(nextCash);
+    }
+
+    let houseNeedsUpdate = false;
+    const nextHouse = householdTransactions.map(h => {
+        if (h.date < '2026-08-01') return h;
+        let stx = null;
+        if (h.sourceTransactionId) {
+            stx = nextTxs.find(t => t.id === h.sourceTransactionId);
+        }
+        if (!stx) {
+            stx = nextTxs.find(t => {
+                const s = stocks.find(stock => stock.id === t.stockId);
+                return s && h.note && h.note.includes(s.name) && h.note.includes('(自動)') && (h.date === t.date || h.date === t.settlementDate) && t.isDCA;
+            });
+        }
+        if (!stx) return h;
+        const stock = stocks.find(s => s.id === stx.stockId);
+        if (!stock) return h;
+
+        const isUS = stock.currency === "USD" || (stock.market as string) === "US" || stock.market === Market.US;
+        const principal = stx.price * stx.quantity;
+        const fee = stx.fee || 0;
+        let totalAmount = principal;
+
+        if (stx.type === TransactionType.BUY) {
+            totalAmount = principal + fee;
+        } else if (stx.type === TransactionType.SELL) {
+            totalAmount = principal - fee - (stx.tax || 0);
+        } else if (stx.type === TransactionType.DIVIDEND) {
+            totalAmount = principal - fee;
+        }
+
+        if (isUS) {
+            totalAmount = Math.round(totalAmount * (stx.exchangeRate || exchangeRate));
+        } else {
+            totalAmount = Math.round(totalAmount);
+        }
+
+        if (h.amount !== totalAmount && totalAmount > 0) {
+            console.log("HEALING HOUSE TX:", h.id, "Old amount:", h.amount, "New amount:", totalAmount, "Stock TX ID:", stx.id);
+            houseNeedsUpdate = true;
+
+            return { ...h, amount: totalAmount };
+        }
+        return h;
+    });
+    if (houseNeedsUpdate) {
+        setHouseholdTransactions(nextHouse);
+    }
+
+  }, [transactions, cashTransactions, householdTransactions, isInitialized, stocks, exchangeRate]);
+
   // --- Auto DCA for Stocks ---
   useEffect(() => {
     if (!isInitialized || stocks.length === 0) return;
-    
-    const today = new Date();
-    const currentYear = today.getFullYear();
-    const currentMonth = today.getMonth() + 1;
-    const currentDay = today.getDate();
-    
-    let newStockTxs: Transaction[] = [];
-    let newCashTxs: CashTransaction[] = [];
-    let newHouseTxs: CashTransaction[] = [];
 
-    stocks.forEach(stock => {
-      // Ensure we only process if there is a monthlyTarget and stock is not hidden
-      if (!stock.monthlyTarget || stock.hidden) return;
+    const runSyncAutoDCA = async () => {
+      const today = new Date();
+      const currentYear = today.getFullYear();
+      const currentMonth = today.getMonth() + 1;
+      const currentDay = today.getDate();
 
-      const settings = stock.dcaSettings || (stock.dcaDates ? [{ accountId: 'UNASSIGNED', dates: stock.dcaDates }] : []);
-      if (settings.length > 0) {
-        
-        let totalDates = 0;
-        settings.forEach(s => { totalDates += s.dates.length });
-        if (totalDates === 0) return;
-        
-        const amountPerDeduction = stock.monthlyTarget / totalDates;
-        
+      let newStockTxs: Transaction[] = [];
+      let updateStockTxs: Transaction[] = [];
+      let newCashTxs: CashTransaction[] = [];
+      let newHouseTxs: CashTransaction[] = [];
 
-        settings.forEach(setting => {
-            let targetAccount = accounts.find(a => a.id === setting.accountId);
-            let targetAccountId = setting.accountId;
-            if (!targetAccount || targetAccountId === 'UNASSIGNED') {
-                targetAccount = accounts.find(a => a.isSecurities && !a.excludeFromTotals);
-                if (targetAccount) targetAccountId = targetAccount.id;
-                else return; 
-            }
+      for (const stock of stocks) {
+        // Ensure we only process if there is a monthlyTarget and stock is not hidden
+        if (!stock.monthlyTarget || stock.hidden) continue;
+        const settings = stock.dcaSettings || (stock.dcaDates ? [{ accountId: 'UNASSIGNED', dates: stock.dcaDates }] : []);
+        if (settings.length > 0) {
 
-            setting.dates.forEach(dcaDay => {
-               if (currentDay >= dcaDay) {
-                  const txDate = `${currentYear}-${currentMonth.toString().padStart(2, '0')}-${dcaDay.toString().padStart(2, '0')}`;
-                  
-                  // Enforce minimum start date of 2026-07-20 as requested
-                  if (txDate < '2026-07-20') return;
-                  if (autoSyncStartDate && txDate < autoSyncStartDate) return;
+          let totalDates = 0;
+          settings.forEach(s => { totalDates += s.dates.length });
+          if (totalDates === 0) continue;
 
-                  const existingStockTx = transactions.find(tx => 
-                       tx.stockId === stock.id && 
-                       tx.accountId === targetAccountId &&
-                       tx.isDCA === true &&
-                      (tx.dcaOriginalDate === txDate || tx.date === txDate)
-                  );
-                  
-                  const isUS = stock.currency === "USD" || (stock.market === Market.US && !stock.currency);
-                  let totalAmount = Math.round(isUS ? amountPerDeduction * exchangeRate : amountPerDeduction);
-                  
-                  let targetCashAccountId = targetAccount!.linkedCashAccountId || targetAccount!.id;
-                  let targetCashAccountName = targetAccount!.name;
+          const amountPerDeduction = stock.monthlyTarget / totalDates;
 
-                  if (!existingStockTx) {
-                      const price = stock.currentPrice || stock.nav || 1;
-                      const quantity = amountPerDeduction / price;
-                      
-                      const txId = generateId();
-                      newStockTxs.push({
-                          id: txId,
-                          date: txDate,
-                          settlementDate: txDate,
-                          accountId: targetAccountId,
-                          stockId: stock.id,
-                          type: TransactionType.BUY,
-                          price: price,
-                          quantity: quantity,
-                          isDCA: true,
-                          dcaOriginalDate: txDate,
-                          note: '定期定額自動買進'
-                      });
+          for (const setting of settings) {
+              let targetAccount = accounts.find(a => a.id === setting.accountId);
+              let targetAccountId = setting.accountId;
+              if (!targetAccount || targetAccountId === 'UNASSIGNED') {
+                  targetAccount = accounts.find(a => a.isSecurities && !a.excludeFromTotals);
+                  if (targetAccount) targetAccountId = targetAccount.id;
+                  else continue;
+              }
 
-                      newCashTxs.push({
-                          id: generateId(),
-                          date: txDate,
-                          accountId: targetCashAccountId,
-                          type: "WITHDRAWAL",
-                          amount: totalAmount,
-                          currency: "TWD",
-                          category: `買進 ${stock.ticker}`,
-                          note: `買進 ${stock.name} (自動)`,
-                          sourceTransactionId: txId,
-                      });
+              for (const dcaDay of setting.dates) {
+                 if (currentDay >= dcaDay) {
+                    const txDate = `${currentYear}-${currentMonth.toString().padStart(2, '0')}-${dcaDay.toString().padStart(2, '0')}`;
 
-                      newHouseTxs.push({
-                          id: generateId(),
-                          date: txDate,
-                          accountId: targetCashAccountName,
-                          type: "WITHDRAWAL",
-                          amount: totalAmount,
-                          currency: "TWD",
-                          category: "投資支出",
-                          note: `買進 ${stock.name} (自動) - 連動`,
-                          sourceTransactionId: txId,
-                      });
-                  } else {
-                      // Self-healing: if stock tx exists but cash/house txs are missing, add them
-                      const existingCashTxDate = existingStockTx.settlementDate || existingStockTx.date;
-                      const cashExists = cashTransactions.some(c => c.sourceTransactionId === existingStockTx.id);
-                      if (!cashExists) {
-                          newCashTxs.push({
-                              id: generateId(),
-                              date: existingCashTxDate,
-                              accountId: targetCashAccountId,
-                              type: "WITHDRAWAL",
-                              amount: totalAmount,
-                              currency: "TWD",
-                              category: `買進 ${stock.ticker}`,
-                              note: `買進 ${stock.name} (自動)`,
-                              sourceTransactionId: existingStockTx.id,
-                          });
+                    // Enforce minimum start date of 2026-08-01 as requested
+                    if (txDate < '2026-08-01') continue;
+                    if (autoSyncStartDate && txDate < autoSyncStartDate) continue;
+
+                    const existingStockTx = transactions.find(tx => 
+                         tx.stockId === stock.id && 
+                         tx.accountId === targetAccountId &&
+                        (tx.dcaOriginalDate === txDate || (tx.date === txDate && tx.isDCA === true))
+                    );
+
+                    const isUS = stock.currency === "USD" || (stock.market === Market.US && !stock.currency);
+                    let totalAmount = Math.round(amountPerDeduction); // TWD deduction amount
+
+                    let txExchangeRate = exchangeRate;
+                    let needsHeal = false;
+
+                    if (existingStockTx && isUS && existingStockTx.isDCA) {
+                        const principalUSD = existingStockTx.price * existingStockTx.quantity;
+                        if (Math.abs(principalUSD - amountPerDeduction) < 5) {
+                            needsHeal = true;
+                        }
+                    }
+
+                    if (isUS && (!existingStockTx || needsHeal)) {
+                      try {
+                        let prevDateObj = new Date(txDate);
+                        prevDateObj.setDate(prevDateObj.getDate() - 1);
+                        const prevDateStr = prevDateObj.toISOString().split('T')[0];
+                        const exRate = await withTimeout(fetchHistoricalPrice("TWD=X", prevDateStr), 8000);
+                        if (exRate && exRate > 0) {
+                          txExchangeRate = exRate;
+                        }
+                      } catch (e) {
+                        console.warn("Failed to fetch exchange rate for App.tsx Auto DCA", e);
                       }
+                    }
 
-                      const houseExists = householdTransactions.some(h => h.sourceTransactionId === existingStockTx.id);
-                      if (!houseExists) {
-                          newHouseTxs.push({
-                              id: generateId(),
-                              date: existingCashTxDate,
-                              accountId: targetCashAccountName,
-                              type: "WITHDRAWAL",
-                              amount: totalAmount,
-                              currency: "TWD",
-                              category: "投資支出",
-                              note: `買進 ${stock.name} (自動) - 連動`,
-                              sourceTransactionId: existingStockTx.id,
-                          });
-                      }
-                  }
-               }
-            });
-        });
+                    let targetCashAccountId = targetAccount!.linkedCashAccountId || targetAccount!.id;
+                    let targetCashAccountName = targetAccount!.name;
+
+                    if (!existingStockTx) {
+                        const price = stock.currentPrice || stock.nav || 1;
+                        const effectiveAmount = isUS ? amountPerDeduction / txExchangeRate : amountPerDeduction;
+                        const quantity = effectiveAmount / price;
+
+                        const txId = generateId();
+                        newStockTxs.push({
+                            id: txId,
+                            date: txDate,
+                            settlementDate: txDate,
+                            accountId: targetAccountId,
+                            stockId: stock.id,
+                            type: TransactionType.BUY,
+                            price: price,
+                            quantity: quantity,
+                            isDCA: true,
+                            ...(isUS ? { exchangeRate: txExchangeRate } : {}),
+                            dcaOriginalDate: txDate,
+                            note: '定期定額自動買進'
+                        });
+                        newCashTxs.push({
+                            id: generateId(),
+                            date: txDate,
+                            accountId: targetCashAccountId,
+                            type: "WITHDRAWAL",
+                            amount: totalAmount,
+                            currency: "TWD",
+                            category: `買進 ${stock.ticker}`,
+                            note: `買進 ${stock.name} (自動)`,
+                            sourceTransactionId: txId,
+                        });
+                        newHouseTxs.push({
+                            id: generateId(),
+                            date: txDate,
+                            accountId: targetCashAccountName,
+                            type: "WITHDRAWAL",
+                            amount: totalAmount,
+                            currency: "TWD",
+                            category: "投資支出",
+                            note: `買進 ${stock.name} (自動) - 連動`,
+                            sourceTransactionId: txId,
+                        });
+                    } else {
+                        if (needsHeal) {
+                            const effectiveAmount = amountPerDeduction / ((existingStockTx.exchangeRate && existingStockTx.exchangeRate !== 1 ? existingStockTx.exchangeRate : txExchangeRate));
+                            const correctQuantity = effectiveAmount / existingStockTx.price;
+                            updateStockTxs.push({
+                                ...existingStockTx,
+                                quantity: correctQuantity,
+                                exchangeRate: (existingStockTx.exchangeRate && existingStockTx.exchangeRate !== 1 ? existingStockTx.exchangeRate : txExchangeRate)
+                            });
+                        }
+
+                        // Self-healing: if stock tx exists but cash/house txs are missing, add them
+                        const existingCashTxDate = existingStockTx.settlementDate || existingStockTx.date;
+                        const cashExists = cashTransactions.some(c => c.sourceTransactionId === existingStockTx.id);
+                        if (!cashExists) {
+                            newCashTxs.push({
+                                id: generateId(),
+                                date: existingCashTxDate,
+                                accountId: targetCashAccountId,
+                                type: "WITHDRAWAL",
+                                amount: totalAmount,
+                                currency: "TWD",
+                                category: `買進 ${stock.ticker}`,
+                                note: `買進 ${stock.name} (自動)`,
+                                sourceTransactionId: existingStockTx.id,
+                            });
+                        }
+                        const houseExists = householdTransactions.some(h => h.sourceTransactionId === existingStockTx.id);
+                        if (!houseExists) {
+                            newHouseTxs.push({
+                                id: generateId(),
+                                date: existingCashTxDate,
+                                accountId: targetCashAccountName,
+                                type: "WITHDRAWAL",
+                                amount: totalAmount,
+                                currency: "TWD",
+                                category: "投資支出",
+                                note: `買進 ${stock.name} (自動) - 連動`,
+                                sourceTransactionId: existingStockTx.id,
+                            });
+                        }
+                    }
+                 }
+              }
+          }
+        }
       }
-    });
 
-    if (newStockTxs.length > 0 || newCashTxs.length > 0 || newHouseTxs.length > 0) {
-       if (newStockTxs.length > 0) setTransactions(prev => [...prev, ...newStockTxs]);
-       if (newCashTxs.length > 0) setCashTransactions(prev => [...prev, ...newCashTxs]);
-       if (newHouseTxs.length > 0) setHouseholdTransactions(prev => [...prev, ...newHouseTxs]);
-    }
+      if (newStockTxs.length > 0 || updateStockTxs.length > 0 || newCashTxs.length > 0 || newHouseTxs.length > 0) {
+         if (newStockTxs.length > 0 || updateStockTxs.length > 0) {
+             setTransactions(prev => {
+                 let next = [...prev];
+                 if (newStockTxs.length > 0) {
+                     next = [...next, ...newStockTxs];
+                 }
+                 if (updateStockTxs.length > 0) {
+                     next = next.map(t => {
+                         const updated = updateStockTxs.find(u => u.id === t.id);
+                         return updated ? updated : t;
+                     });
+                 }
+                 return next;
+             });
+         }
+         if (newCashTxs.length > 0) setCashTransactions(prev => [...prev, ...newCashTxs]);
+         if (newHouseTxs.length > 0) setHouseholdTransactions(prev => [...prev, ...newHouseTxs]);
+      }
+    };
+
+    runSyncAutoDCA();
+
   }, [stocks, transactions, cashTransactions, householdTransactions, isInitialized, accounts, autoSyncStartDate, exchangeRate]);
+
   // Helper function for saving data (used in useEffect and initial load)
   const getExportData = useCallback(
     () => ({
@@ -2241,6 +2435,7 @@ function App() {
     transactions,
     accounts,
     handleSaveTransaction,
+    exchangeRate,
   );
 
   if (!isAppUnlocked) {

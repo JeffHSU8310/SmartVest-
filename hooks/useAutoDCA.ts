@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Stock, Transaction, TransactionType, Account } from "../types";
-import { fetchDcaPrice, generateId } from "../utils";
+import { fetchDcaPrice, fetchHistoricalPrice, generateId, withTimeout } from "../utils";
 
 // Helper to get Taiwan date string YYYY-MM-DD
 const getTaiwanDateString = (d: Date) => {
@@ -50,12 +50,14 @@ const getNextBusinessDay = (dateStr: string) => {
   }
   return formatLocalDate(d);
 };
+
 export const useAutoDCA = (
   isInitialized: boolean,
   stocks: Stock[],
   transactions: Transaction[],
   accounts: Account[],
   onSaveTransaction: (tx: Transaction, stock?: Stock) => void,
+  exchangeRate: number = 32.5,
 ) => {
   const processed = useRef<Set<string>>(new Set());
 
@@ -98,50 +100,28 @@ export const useAutoDCA = (
 
             // Time constraint: Execute at 10 AM local time on target date
             const now = new Date();
-            const todayStr = formatLocalDate(now);
+            const targetDateObjMatch = parseLocalDate(targetDateStr);
+            const isToday =
+              now.getFullYear() === targetDateObjMatch.getFullYear() &&
+              now.getMonth() === targetDateObjMatch.getMonth() &&
+              now.getDate() === targetDateObjMatch.getDate();
 
-            // Get current hour in Taiwan time
-            const taiwanHourStr = now.toLocaleString("en-US", {
-              timeZone: "Asia/Taipei",
-              hour: "numeric",
-              hour12: false,
-            });
-            const taiwanHour = parseInt(taiwanHourStr, 10);
+            if (isToday && now.getHours() < 10) {
+              // It's today, but before 10 AM local time. Skip.
+              continue;
+            }
 
-            if (targetDateStr > todayStr) {
-              {
-                continue; // Future target date, do not execute yet
-              }
+            if (targetDateStr <= todayStr) {
+              const matchingTxs = transactions.filter(
+                (t) =>
+                  t.stockId === stock.id &&
+                  t.accountId === setting.accountId &&
+                  t.type === TransactionType.BUY &&
+                  t.isDCA,
+              );
 
-              if (targetDateStr === todayStr && taiwanHour < 10) {
-                continue; // Wait until 10 AM Taiwan time to execute on target date
-              }
-
-              const targetDateObj = parseLocalDate(targetDateStr);
-              const minMatchDate = new Date(targetDateObj);
-              minMatchDate.setDate(minMatchDate.getDate() - 4); // Expanded to catch old bugs
-              const maxMatchDate = new Date(targetDateObj);
-              maxMatchDate.setDate(maxMatchDate.getDate() + 1);
-
-              // Find all matching txs in window
-              const matchingTxs = transactions.filter((t) => {
-                if (
-                  t.stockId !== stock.id ||
-                  t.accountId !== setting.accountId ||
-                  !t.isDCA ||
-                  t.type !== TransactionType.BUY
-                )
-                  return false;
-                const tDate = parseLocalDate(t.date);
-                // Additionally, we should make sure we don't mix up 11th with other days, but since window is small it should be fine.
-                return tDate >= minMatchDate && tDate <= maxMatchDate;
-              });
-
-              // Sort so that exact match or closest to targetDateStr comes first.
-              // But wait! If we have multiple, we might want to just pick one that hasn't been processed yet?
-              // Actually, processed.current caches `cacheKey`, not the transaction.
-              // Let's just pick the first one that is close.
               matchingTxs.sort((a, b) => {
+                const targetDateObj = parseLocalDate(targetDateStr);
                 const aDiff = Math.abs(
                   parseLocalDate(a.date).getTime() - targetDateObj.getTime(),
                 );
@@ -151,31 +131,55 @@ export const useAutoDCA = (
                 return aDiff - bDiff;
               });
 
-              let existingTx =
-                matchingTxs.length > 0 ? matchingTxs[0] : undefined;
+              let existingTx = matchingTxs.length > 0 ? matchingTxs[0] : undefined;
+
+              if (existingTx) {
+                  // Only consider it an existingTx for THIS targetDate if they are relatively close (within 5 days), OR if it explicitly matches.
+                  // This prevents a single historical tx from matching all future target dates if no others exist.
+                  const targetDateObj = parseLocalDate(targetDateStr);
+                  const aDiff = Math.abs(parseLocalDate(existingTx.date).getTime() - targetDateObj.getTime()) / (1000 * 3600 * 24);
+                  if (aDiff > 5) {
+                      existingTx = undefined;
+                  }
+              }
+
+              // Do not process or create any DCA for target dates before 2026-08-01
+              if (targetDateStr < '2026-08-01') continue;
 
               if (!existingTx) {
                 const cacheKey = `${stock.id}_${setting.accountId}_${targetDateStr}`;
                 if (processed.current.has(cacheKey)) continue;
                 processed.current.add(cacheKey);
+
                 console.log(
                   `Auto DCA: Missing transaction for ${stock.ticker} scheduled for ${reqDateStr} -> executing on ${targetDateStr}. Fetching price...`,
                 );
 
-                // Let the user know we are trying
-                // alert(`嘗試為 ${stock.ticker} 新增自動扣款 (目標日: ${targetDateStr})`);
-
-                let priceInfo = await fetchDcaPrice(
+                let priceInfo = await withTimeout(fetchDcaPrice(
                   stock.ticker,
                   targetDateStr,
-                );
-
-                // alert(`Price info for ${stock.ticker}: ${JSON.stringify(priceInfo)}`);
+                ), 8000);
 
                 const account = accounts.find(
                   (a) => a.id === setting.accountId,
                 );
-                const isUS = stock.market === "US" || stock.currency === "USD";
+                const isUS = (stock.market as string) === "US" || stock.currency === "USD";
+
+                let txExchangeRate = exchangeRate;
+                if (isUS) {
+                  try {
+                    let prevDateObj = parseLocalDate(targetDateStr);
+                    prevDateObj.setDate(prevDateObj.getDate() - 1);
+                    const prevDateStr = formatLocalDate(prevDateObj);
+                    const exRate = await withTimeout(fetchHistoricalPrice("TWD=X", prevDateStr), 8000);
+                    if (exRate && exRate > 0) {
+                      txExchangeRate = exRate;
+                    }
+                  } catch (e) {
+                    console.warn("Failed to fetch exchange rate for auto DCA", e);
+                  }
+                }
+
                 const isFund =
                   stock.market === "FUND" ||
                   (stock.category && stock.category.includes("基金")) ||
@@ -199,12 +203,14 @@ export const useAutoDCA = (
                   let fee = 0;
                   let feeRate = "0.1";
 
+                  let effectiveAmount = amount;
                   if (isUS) {
+                    effectiveAmount = amount / txExchangeRate;
                     if (isFund) feeRate = "0";
                     else if (account?.name.includes("永豐")) feeRate = "0.01";
                     else if (account?.name.includes("凱基")) feeRate = "0.03";
 
-                    fee = amount * (parseFloat(feeRate) / 100);
+                    fee = effectiveAmount * (parseFloat(feeRate) / 100);
                     if (
                       account?.name.includes("永豐") ||
                       account?.name.includes("凱基")
@@ -215,7 +221,7 @@ export const useAutoDCA = (
                     else fee = 1;
                   }
 
-                  const principal = Math.max(0, amount - fee);
+                  const principal = Math.max(0, effectiveAmount - fee);
                   const quantity = principal / price;
 
                   const txDateStr = targetDateStr;
@@ -235,10 +241,12 @@ export const useAutoDCA = (
                     tax: 0,
                     note: noteStr,
                     isDCA: true,
+                    ...(isUS ? { exchangeRate: txExchangeRate } : {}),
                     settlementDate: isFund
                       ? txDateStr
                       : addBusinessDays(txDateStr, 2),
                   };
+
                   console.log(
                     `Auto DCA: Generated transaction for ${stock.ticker}`,
                     newTx,
@@ -257,7 +265,7 @@ export const useAutoDCA = (
                 const account = accounts.find(
                   (a) => a.id === setting.accountId,
                 );
-                const isUS = stock.market === "US" || stock.currency === "USD";
+                const isUS = (stock.market as string) === "US" || stock.currency === "USD";
                 const isFund =
                   stock.market === "FUND" ||
                   (stock.category && stock.category.includes("基金")) ||
@@ -268,23 +276,33 @@ export const useAutoDCA = (
                   (todayObj.getTime() - targetDateObjMatch.getTime()) /
                     (1000 * 3600 * 24) <=
                   7;
+
                 const isFundPriceOutdated =
                   isFund &&
                   isRecent &&
                   isEstimated && // ONLY update fund prices if they are still marked as estimated
                   stock.currentPrice &&
                   Math.abs(stock.currentPrice - existingTx.price) > 0.0001;
+
                 const isTodayPriceOutdated =
                   targetDateStr === todayStr &&
                   isEstimated && // ONLY update if it was estimated, or if it's not a fund it might update during the day?
                   stock.currentPrice &&
                   Math.abs(stock.currentPrice - existingTx.price) > 0.0001;
 
+                const principalUSD = existingTx.price * existingTx.quantity;
+                const isWrongQuantity = isUS && Math.abs(principalUSD - setting.amount) < 5;
+
+                if (targetDateStr < '2026-08-01') continue;
+                // STRICT RULE: NEVER TOUCH ANY RECORD BEFORE 2026-08-01
+                if (existingTx.date < '2026-08-01') continue;
+
                 if (
                   needsDateFix ||
                   isEstimated ||
                   isFundPriceOutdated ||
-                  isTodayPriceOutdated
+                  isTodayPriceOutdated ||
+                  isWrongQuantity
                 ) {
                   const cacheKey = `update_${existingTx.id}_${stock.currentPrice || 0}_${stock.lastUpdateDate || ""}_${isEstimated}`;
                   if (processed.current.has(cacheKey)) continue;
@@ -293,10 +311,26 @@ export const useAutoDCA = (
                   console.log(
                     `Auto DCA: Checking if update needed for transaction ${existingTx.id} (Stock: ${stock.ticker}, Target: ${targetDateStr}, Current: ${existingTx.date}). Date mismatch: ${needsDateFix}, Estimated: ${isEstimated}`,
                   );
-                  let priceInfo = await fetchDcaPrice(
+
+                  let priceInfo = await withTimeout(fetchDcaPrice(
                     stock.ticker,
                     targetDateStr,
-                  );
+                  ), 8000);
+
+                  let txExchangeRate = exchangeRate;
+                  if (isUS && !existingTx.exchangeRate) {
+                    try {
+                      let prevDateObj = parseLocalDate(targetDateStr);
+                      prevDateObj.setDate(prevDateObj.getDate() - 1);
+                      const prevDateStr = formatLocalDate(prevDateObj);
+                      const exRate = await withTimeout(fetchHistoricalPrice("TWD=X", prevDateStr), 8000);
+                    if (exRate && exRate > 0) {
+                      txExchangeRate = exRate;
+                    }
+                    } catch (e) {
+                      console.warn("Failed to fetch exchange rate for auto DCA update", e);
+                    }
+                  }
 
                   if ((!priceInfo || priceInfo.price <= 0) && isFund) {
                     // For funds, if we are checking an existing transaction, the user explicitly
@@ -304,8 +338,8 @@ export const useAutoDCA = (
                     // Because fund NAVs are usually delayed, stock.lastUpdateDate < targetDateStr
                     // is often true, which caused the tag to persist incorrectly.
                     let priceChanged = stock.currentPrice && Math.abs(stock.currentPrice - existingTx.price) > 0.0001;
-                    
-                    // If the user just updated prices (stock.lastUpdateDate is today or newer), 
+
+                    // If the user just updated prices (stock.lastUpdateDate is today or newer),
                     // and the price didn't change, we should still remove the estimated tag.
                     let isEst = !stock.lastUpdateDate || stock.lastUpdateDate < targetDateStr;
                     if (priceChanged) isEst = false;
@@ -331,11 +365,14 @@ export const useAutoDCA = (
 
                     let fee = 0;
                     let feeRate = "0.1";
+
+                    let effectiveAmount = amount;
                     if (isUS) {
+                      effectiveAmount = amount / txExchangeRate;
                       if (isFund) feeRate = "0";
                       else if (account?.name.includes("永豐")) feeRate = "0.01";
                       else if (account?.name.includes("凱基")) feeRate = "0.03";
-                      fee = amount * (parseFloat(feeRate) / 100);
+                      fee = effectiveAmount * (parseFloat(feeRate) / 100);
                       if (
                         account?.name.includes("永豐") ||
                         account?.name.includes("凱基")
@@ -346,7 +383,7 @@ export const useAutoDCA = (
                       else fee = 1;
                     }
 
-                    const principal = Math.max(0, amount - fee);
+                    const principal = Math.max(0, effectiveAmount - fee);
                     const quantity = principal / price;
 
                     const noteStr = priceInfo.isEstimated
@@ -358,7 +395,8 @@ export const useAutoDCA = (
                       needsDateFix ||
                       (!priceInfo.isEstimated && isEstimated) ||
                       isFundPriceOutdated ||
-                      isTodayPriceOutdated
+                      isTodayPriceOutdated ||
+                      isWrongQuantity
                     ) {
                       const updatedTx: Transaction = {
                         ...existingTx,
@@ -369,6 +407,7 @@ export const useAutoDCA = (
                           ? parseFloat(fee.toFixed(2))
                           : Math.round(fee),
                         note: noteStr,
+                        ...(isUS && !existingTx.exchangeRate ? { exchangeRate: txExchangeRate } : {}),
                         settlementDate: isFund
                           ? targetDateStr
                           : addBusinessDays(targetDateStr, 2),
@@ -390,6 +429,7 @@ export const useAutoDCA = (
         }
       }
     };
+
     runAutoDCA();
-  }, [isInitialized, stocks, transactions, accounts, onSaveTransaction]);
+  }, [isInitialized, stocks, transactions, accounts, onSaveTransaction, exchangeRate]);
 };

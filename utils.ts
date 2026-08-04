@@ -1300,6 +1300,15 @@ export const fetchDcaPrice = async (symbol: string, targetDate: string): Promise
     }
 };
 
+// 讓帶有網路請求的背景流程（例如自動定期定額）不會被卡住的逾時保護。
+// 逾時後回傳 null，呼叫端會走既有的保底匯率邏輯，不會因單一請求卡死整個佇列。
+export const withTimeout = <T,>(promise: Promise<T>, ms: number): Promise<T | null> => {
+  return Promise.race([
+    promise,
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
+  ]);
+};
+
 export const fetchHistoricalPrice = async (symbol: string, targetDate: string): Promise<number | null> => {
     try {
         const d = new Date(targetDate);

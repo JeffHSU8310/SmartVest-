@@ -617,7 +617,7 @@ const TransactionForm: React.FC<Props> = ({ stocks, accounts, transactions, mark
             setTotalTWD('');
         }
      }
-  }, [totalAmount, isUSStock, type]); // Removed initialData from dependencies
+  }, [totalAmount, isUSStock, type, exchangeRate]); // Removed initialData from dependencies
 
   const handlePrincipalChange = (val: string) => {
     userInteracted.current = true;
@@ -742,7 +742,7 @@ const TransactionForm: React.FC<Props> = ({ stocks, accounts, transactions, mark
       paymentDate: type === TransactionType.DIVIDEND ? date : undefined, // Payment Date = Entry Date
       settlementDate: (type === TransactionType.BUY || type === TransactionType.SELL) ? settlementDate : undefined,
       isDCA: type === TransactionType.BUY ? isDCA : undefined,
-      dcaOriginalDate: type === TransactionType.BUY && isDCA ? (initialData?.dcaOriginalDate || initialData?.date) : undefined,
+      dcaOriginalDate: initialData?.dcaOriginalDate || (type === TransactionType.BUY && isDCA ? initialData?.date : undefined),
       isDRIP: type === TransactionType.BUY ? isDRIP : undefined,
       isTenX: isTenX,
       dividendAccountId: type === TransactionType.DIVIDEND && dividendAccountId !== '' ? dividendAccountId : undefined,
@@ -1182,10 +1182,10 @@ const TransactionForm: React.FC<Props> = ({ stocks, accounts, transactions, mark
                   </div>
                    <div className="space-y-1.5">
                      <label className="block text-xs font-bold text-slate-400 uppercase tracking-wide">對應匯率</label>
-                     <input 
-                        type="number" step="0.0001" 
-                        value={exchangeRate} readOnly
-                        className="w-full px-4 py-2.5 bg-slate-100 rounded-xl text-slate-500 font-mono text-center" 
+                     <input
+                        type="number" step="0.0001"
+                        value={exchangeRate} onChange={(e) => setExchangeRate(e.target.value)}
+                        className="w-full px-4 py-2.5 bg-slate-50 rounded-xl text-slate-700 font-mono text-center"
                      />
                   </div>
                </div>
