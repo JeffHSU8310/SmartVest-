@@ -2104,8 +2104,17 @@ function App() {
         )
         .map((s) => s.ticker);
 
-      const [twseDataResult, realtimeResult, marketResult] = await Promise.all([
+      // 台股 ETF 代號一律以 00 開頭，沒有這類持股就不必抓官方淨值表
+      //（實測 4.4 秒 / 61KB），它只服務於 ETF 的淨值欄位。
+      const hasTwEtfHolding = stocks.some((s) => {
+        if (s.hidden) return false;
+        const code = String(s.ticker || "").split(".")[0].trim();
+        return /^00/.test(code) || !!s.category?.includes("ETF");
+      });
+
+      const [twseDataResult, realtimeResult] = await Promise.all([
         (async () => {
+          if (!hasTwEtfHolding) return null;
           try {
             if (isDesktopEnv) {
               const res = await window.electronAPI!.fetchTWSE();
@@ -2122,9 +2131,6 @@ function App() {
         !isDesktopEnv && twCodes.length > 0
           ? withTimeout(fetchTWRealtimeBatch(twCodes), PRICE_UPDATE_PREFETCH_MS).catch(() => null)
           : Promise.resolve(null),
-        !isDesktopEnv
-          ? withTimeout(fetchFullTWMarketPriceMap(), PRICE_UPDATE_PREFETCH_MS).catch(() => null)
-          : Promise.resolve(null),
       ]);
 
       if (twseDataResult?.a1) {
@@ -2133,13 +2139,48 @@ function App() {
         );
       }
       twRealtimeMap = realtimeResult;
-      twMarketMap = marketResult;
+
+      // 全市場日收盤表改為「按需才抓」。
+      //
+      // 2026-08-04 實測：TWSE OpenAPI 6.2 秒 / 318KB、TPEx OpenAPI 17.7 秒，
+      // 而 mis.twse 只要 3~4 秒、1KB，且上市與上櫃都涵蓋，收盤後一樣給得出
+      // 當日收盤價（z 欄位）。也就是說即時報價成功時，這張整個市場的日收盤
+      // 大表完全是多餘的，卻是股價更新最大的一段等待。
+      //
+      // 因此只有在確實還有台股標的沒被即時報價涵蓋時（例如 mis.twse 查無的
+      // 代號，或即時報價整批失敗）才去抓它，作為補漏用的後備。
+      if (!isDesktopEnv) {
+        const uncovered = twCodes.filter((t) => {
+          const code = String(t || "").split(".")[0].trim().toUpperCase();
+          return !twRealtimeMap?.has(code);
+        });
+        if (uncovered.length > 0) {
+          twMarketMap = await withTimeout(
+            fetchFullTWMarketPriceMap(),
+            PRICE_UPDATE_PREFETCH_MS,
+          ).catch(() => null);
+        }
+      }
 
       // 盤中卻拿不到即時價的台股標的。這些標的只能退回日收盤表（＝昨收），
       // 使用者需要知道，否則會誤以為更新成功、實際看到的卻是舊價格。
       const staleIntradayTickers: string[] = [];
       // 逾時、完全沒能更新到的標的
       const timedOutTickers: string[] = [];
+
+      // 同一次更新中，同一個代號的 Yahoo 報價只抓一次。
+      // ETF 的淨值區塊原本會對「完全相同的代號」再打一次完全相同的請求
+      // （兩邊都只是讀 regularMarketPrice），等於每檔 ETF 白跑一趟網路。
+      const quoteCache = new Map<string, Promise<any>>();
+      const getYahooQuote = (symbol: string): Promise<any> => {
+        const key = String(symbol || "").trim().toUpperCase();
+        let hit = quoteCache.get(key);
+        if (!hit) {
+          hit = fetchCurrentYahooQuote(symbol);
+          quoteCache.set(key, hit);
+        }
+        return hit;
+      };
 
       // 2. Fetch prices & map NAV
       const updateOneStock = async (stock: Stock): Promise<Stock> => {
@@ -2204,7 +2245,7 @@ function App() {
                 if (fundNav && fundNav.nav > 0) {
                   fundData = { nav: fundNav.nav, date: fundNav.date };
                 } else {
-                  const apiRes = await fetchCurrentYahooQuote(stock.ticker || stock.name);
+                  const apiRes = await getYahooQuote(stock.ticker || stock.name);
                   if (apiRes.success && apiRes.regularMarketPrice > 0) {
                     fundData = { nav: apiRes.regularMarketPrice, date: getLocalTodayString() };
                   }
@@ -2252,7 +2293,7 @@ function App() {
                 updatedStock.marketState = res.data.marketState;
               }
             } else {
-              const apiRes = await fetchCurrentYahooQuote(finalSymbol);
+              const apiRes = await getYahooQuote(finalSymbol);
               if (apiRes.success && apiRes.regularMarketPrice > 0) {
                 updatedStock.currentPrice = apiRes.regularMarketPrice;
                 if (apiRes.postMarketPrice != null) {
@@ -2265,7 +2306,7 @@ function App() {
                   updatedStock.marketState = apiRes.marketState;
                 }
               } else if (stock.market === Market.TW) {
-                const otcApiRes = await fetchCurrentYahooQuote(
+                const otcApiRes = await getYahooQuote(
                   stock.ticker + ".TWO",
                 );
                 if (otcApiRes.success && otcApiRes.regularMarketPrice > 0) {
@@ -2349,7 +2390,7 @@ function App() {
                     usNavFound = true;
                   }
                 } else {
-                  const quoteRes = await fetchCurrentYahooQuote(finalSymbol);
+                  const quoteRes = await getYahooQuote(finalSymbol);
                   if (quoteRes.success && quoteRes.regularMarketPrice != null) {
                     if (!updatedStock.nav) updatedStock.nav = quoteRes.regularMarketPrice;
                     usNavFound = true;

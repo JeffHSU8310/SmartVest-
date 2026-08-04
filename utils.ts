@@ -3,7 +3,31 @@ import { Stock, Transaction, TransactionType, PortfolioItem, Market, Account, As
 
 export const generateId = (): string => Math.random().toString(36).substring(2, 9);
 
-export const fetchFullTWMarketPriceMap = async (): Promise<Map<string, { price: number; name?: string }>> => {
+// 交易日內幾乎不變的大表（ETF 官方淨值 61KB、全市場日收盤 318KB）加上
+// 「本次瀏覽期間」的記憶體快取，連續按更新時就不必重複下載。
+//
+// 刻意只放記憶體、不寫 localStorage：這些資料量大，寫進去會重蹈先前
+// 大盤日 K 佔滿 iPhone localStorage 的覆轍，而它們本來就隨時可重抓。
+const MEMORY_CACHE_TTL_MS = 15 * 60 * 1000;
+const memoryCache = new Map<string, { at: number; value: any }>();
+
+const withMemoryCache = async <T,>(key: string, loader: () => Promise<T>): Promise<T> => {
+    const hit = memoryCache.get(key);
+    if (hit && Date.now() - hit.at < MEMORY_CACHE_TTL_MS) return hit.value as T;
+    const value = await loader();
+    // 只快取「真的有拿到東西」的結果，免得把一次失敗鎖在快取裡 15 分鐘
+    const isEmpty =
+        value === null ||
+        value === undefined ||
+        (value instanceof Map && value.size === 0);
+    if (!isEmpty) memoryCache.set(key, { at: Date.now(), value });
+    return value;
+};
+
+export const fetchFullTWMarketPriceMap = async (): Promise<Map<string, { price: number; name?: string }>> =>
+    withMemoryCache('tw_market_price_map', fetchFullTWMarketPriceMapUncached);
+
+const fetchFullTWMarketPriceMapUncached = async (): Promise<Map<string, { price: number; name?: string }>> => {
     const priceMap = new Map<string, { price: number; name?: string }>();
     
     // TWSE / TPEx OpenAPI 不回傳 Access-Control-Allow-Origin，
@@ -1294,7 +1318,10 @@ export const fetchFundNavByName = async (
     return null;
 };
 
-export const fetchTWSEEtfDirect = async (): Promise<any> => {
+export const fetchTWSEEtfDirect = async (): Promise<any> =>
+    withMemoryCache('twse_etf_nav_list', fetchTWSEEtfDirectUncached);
+
+const fetchTWSEEtfDirectUncached = async (): Promise<any> => {
     try {
         if (typeof window !== 'undefined' && (window as any).electronAPI && (window as any).electronAPI.fetchTWSE) {
             const res = await (window as any).electronAPI.fetchTWSE();
