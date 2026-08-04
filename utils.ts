@@ -3,6 +3,15 @@ import { Stock, Transaction, TransactionType, PortfolioItem, Market, Account, As
 
 export const generateId = (): string => Math.random().toString(36).substring(2, 9);
 
+// 讓帶有網路請求的背景流程（例如自動定期定額）不會被卡住的逾時保護。
+// 逾時後回傳 null，呼叫端會走既有的保底匯率邏輯，不會因單一請求卡死整個佇列。
+export const withTimeout = <T,>(promise: Promise<T>, ms: number): Promise<T | null> => {
+  return Promise.race([
+    promise,
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
+  ]);
+};
+
 // 交易日內幾乎不變的大表（ETF 官方淨值 61KB、全市場日收盤 318KB）加上
 // 「本次瀏覽期間」的記憶體快取，連續按更新時就不必重複下載。
 //
@@ -33,9 +42,15 @@ const fetchFullTWMarketPriceMapUncached = async (): Promise<Map<string, { price:
     // TWSE / TPEx OpenAPI 不回傳 Access-Control-Allow-Origin，
     // 瀏覽器直連一定被 CORS 擋下，必須走 safeFetchJson（內含代理與逾時保護）。
     // 這裡是「加速用的最佳努力」——失敗時 App 會自動退回逐檔 FinMind 查詢。
+    // 兩個來源各自設上限，而不是一起等最慢的那個。
+    //
+    // 2026-08-04 實測：TWSE 6.2 秒、TPEx 17.7 秒。Promise.allSettled 會等到
+    // 兩邊都結束，等於整張表永遠被 TPEx 拖著走。而 TPEx 提供的是上櫃日收盤，
+    // mis.twse 的即時報價本來就涵蓋上櫃（收盤後也給得出收盤價），這裡只是
+    // 補漏用的後備 —— 值不得為它多等十幾秒，逾時就放棄。
     const [twseData, tpexData] = await Promise.allSettled([
-        safeFetchJson('https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL'),
-        safeFetchJson('https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes')
+        withTimeout(safeFetchJson('https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL'), 8000),
+        withTimeout(safeFetchJson('https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes'), 6000)
     ]);
 
     // 1. 上市公司全市場 (TWSE OpenAPI)
@@ -1426,15 +1441,6 @@ export const fetchDcaPrice = async (symbol: string, targetDate: string): Promise
         console.error('Error fetching DCA price:', error);
         return null;
     }
-};
-
-// 讓帶有網路請求的背景流程（例如自動定期定額）不會被卡住的逾時保護。
-// 逾時後回傳 null，呼叫端會走既有的保底匯率邏輯，不會因單一請求卡死整個佇列。
-export const withTimeout = <T,>(promise: Promise<T>, ms: number): Promise<T | null> => {
-  return Promise.race([
-    promise,
-    new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
-  ]);
 };
 
 export const fetchHistoricalPrice = async (symbol: string, targetDate: string): Promise<number | null> => {

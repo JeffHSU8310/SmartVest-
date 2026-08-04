@@ -2071,6 +2071,18 @@ function App() {
     setIsUpdatingPrices(true);
     let errorMessages: string[] = [];
 
+    // 各階段計時。打開瀏覽器主控台（F12 -> Console）就能看到每一段實際花多久，
+    // 不必再靠猜的找瓶頸。
+    const perfT0 =
+      typeof performance !== "undefined" ? performance.now() : Date.now();
+    const lap = (label: string) => {
+      const now =
+        typeof performance !== "undefined" ? performance.now() : Date.now();
+      console.log(
+        `[股價更新] ${label}: ${((now - perfT0) / 1000).toFixed(1)}s`,
+      );
+    };
+
     // 強制偵測是否處於桌面打包環境 (若 protocol 為 file: 則肯定是)
     const isDesktopEnv =
       window.electronAPI?.isElectron || window.location.protocol === "file:";
@@ -2133,6 +2145,8 @@ function App() {
           : Promise.resolve(null),
       ]);
 
+      lap(`共用批次抓取完成（ETF淨值表 ${twseDataResult ? "有" : "無"} / 即時報價 ${realtimeResult?.size ?? 0} 檔）`);
+
       if (twseDataResult?.a1) {
         twseEtfList = twseDataResult.a1.flatMap(
           (group: any) => group.msgArray || [],
@@ -2150,15 +2164,30 @@ function App() {
       // 因此只有在確實還有台股標的沒被即時報價涵蓋時（例如 mis.twse 查無的
       // 代號，或即時報價整批失敗）才去抓它，作為補漏用的後備。
       if (!isDesktopEnv) {
+        // 只有「mis.twse 本來就應該查得到、卻真的沒查到」的上市櫃代號才算未涵蓋。
+        //
+        // twCodes 依 market 分類納入，會一併帶進基金與債券，但它們的代號不是
+        // 四到六碼數字，fetchTWRealtimeBatch 根本不會去查，自然永遠不在結果裡。
+        // 若照單全收判定為「未涵蓋」，就會每次都去抓那張最慢的全市場日收盤表
+        //（TWSE 6.2s + TPEx 17.7s）—— 而那張表同樣以數字代號為 key，對基金
+        // 債券一樣沒有幫助，等於純粹白等。
         const uncovered = twCodes.filter((t) => {
           const code = String(t || "").split(".")[0].trim().toUpperCase();
+          if (!/^[0-9]{4,6}[A-Z]?$/.test(code)) return false;
           return !twRealtimeMap?.has(code);
         });
         if (uncovered.length > 0) {
+          console.log(
+            `[股價更新] 即時報價未涵蓋 ${uncovered.length} 檔，需補抓日收盤大表：`,
+            uncovered.join("、"),
+          );
           twMarketMap = await withTimeout(
             fetchFullTWMarketPriceMap(),
             PRICE_UPDATE_PREFETCH_MS,
           ).catch(() => null);
+          lap("補抓日收盤大表完成");
+        } else {
+          lap("即時報價已涵蓋全部台股，略過日收盤大表");
         }
       }
 
@@ -2423,6 +2452,7 @@ function App() {
           return stock;
         }),
       );
+      lap("逐檔更新完成（美股／基金報價、ETF淨值）");
       setStocks(updatedStocks);
 
       // 盤中卻只拿到日收盤價時明確告知，不要讓使用者以為看到的是即時價

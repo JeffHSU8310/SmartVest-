@@ -83,8 +83,28 @@ export default function PeriodPerformance({ portfolio, transactions, exchangeRat
         return p.totalShares > 0 || transactions.some(t => t.stockId === p.stock.id);
       });
 
+      // 沒有掛牌代號的基金在 Yahoo / FinMind 都查無 K 線，硬抓只會耗掉整段
+      // 逾時（每檔 15 秒）才失敗，卻是區間績效等待時間的主要來源。
+      // 判斷方式與股價更新一致：有數字代號或英文代號的（境外掛牌標的）不算，
+      // 只排除真正查不到的那種。
+      const isUnfetchableFund = (stock: any): boolean => {
+        const ticker = String(stock?.ticker || '');
+        const looksListed =
+          /^[0-9]{4,6}[A-Z]?(\.TW|\.TWO)?$/i.test(ticker) || /^[A-Z]{1,5}$/.test(ticker);
+        if (looksListed) return false;
+        return (
+          stock?.market === 'FUND' ||
+          !!stock?.category?.includes('基金') ||
+          !!stock?.name?.includes('基金')
+        );
+      };
+
       // 極速優化：一次平行預抓所有持股標的過去 450 天 K 線歷史，並以 localStorage 進行持久化快取
-      const uniqueSymbols = Array.from(new Set(relevantPortfolio.map(p => p.stock.ticker || p.stock.id)));
+      const uniqueSymbols = Array.from(new Set(
+        relevantPortfolio
+          .filter(p => !isUnfetchableFund(p.stock))
+          .map(p => p.stock.ticker || p.stock.id)
+      ));
       const nowSec = Math.floor(now.getTime() / 1000);
       const period1Sec = nowSec - 450 * 86400;
       const symbolPriceMap = new Map<string, Map<string, number>>();
@@ -146,9 +166,13 @@ export default function PeriodPerformance({ portfolio, transactions, exchangeRat
       // fetchHistoricalPrice 走的也是同一組來源。過去沒有記錄這件事，
       // 同一檔會在 4 個期間 × 起訖點總共重複走完整代理鏈 8 次，
       // 這正是區間績效動輒卡上百秒的主因。這裡記下來直接略過。
-      const unresolvableSymbols = new Set<string>(
-        uniqueSymbols.filter(sym => !symbolPriceMap.has(sym))
-      );
+      const unresolvableSymbols = new Set<string>([
+        ...uniqueSymbols.filter(sym => !symbolPriceMap.has(sym)),
+        // 上面已排除、根本沒送去預抓的基金，同樣不要再逐日期補打網路
+        ...relevantPortfolio
+          .filter(p => isUnfetchableFund(p.stock))
+          .map(p => p.stock.ticker || p.stock.id),
+      ]);
 
       // 從已預抓的 K 線表就地查價（往前找最多 14 天的最近交易日），
       // 純記憶體運算、不觸網。
