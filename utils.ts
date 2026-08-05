@@ -831,26 +831,38 @@ const fetchViaProxy = async (
     return JSON.stringify(parsed);
 };
 
-// 先試記憶中的好代理，失敗再全體競速。回傳已驗證過的 JSON 字串。
+// 記憶中的好代理只給「頭彩優先」的短暫時間，不是整條 9 秒逾時都拿來等它。
+// 之前是整段 await 完才 fallback，代理只要暫時變慢（公用代理常見），
+// 每一次呼叫都要先繳這 9 秒的稅 —— 這正是區間績效個別補抓卡在 9.9 秒
+// （逼近 PROXY_TIMEOUT_MS）的原因。現在頭彩逾時後就立刻把其餘代理一起
+// 拉進來競速，原本的 preferred 呼叫仍在跑、還是可能先回來獲勝。
+const PREFERRED_PROXY_HEAD_START_MS = 1500;
+
+// 先試記憶中的好代理，失敗或太慢再全體競速。回傳已驗證過的 JSON 字串。
 const fetchThroughProxies = async (
     targetUrl: string,
     init?: RequestInit,
 ): Promise<string | null> => {
     const preferred = getPreferredProxyIndex();
-    if (preferred >= 0) {
-        try {
-            const quick = await fetchViaProxy(preferred, targetUrl, init);
-            if (quick !== null) return quick;
-        } catch (e) { /* 落到下方的全體競速 */ }
+    if (preferred < 0) {
+        return raceFirstValid(PROXY_BUILDERS.map((_, idx) => () => fetchViaProxy(idx, targetUrl, init)));
     }
 
-    return raceFirstValid(
-        PROXY_BUILDERS.map((_, idx) => () =>
+    const preferredTask = fetchViaProxy(preferred, targetUrl, init).catch(() => null);
+    const headStartResult = await Promise.race([
+        preferredTask,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), PREFERRED_PROXY_HEAD_START_MS)),
+    ]);
+    if (headStartResult !== null) return headStartResult;
+
+    return raceFirstValid([
+        () => preferredTask,
+        ...PROXY_BUILDERS.map((_, idx) => () =>
             idx === preferred
-                ? Promise.resolve(null)          // 剛剛已經單獨試過了
+                ? Promise.resolve(null)          // 已經在跑了，這裡不重複發request
                 : fetchViaProxy(idx, targetUrl, init)
-        )
-    );
+        ),
+    ]);
 };
 
 // 回應必須是合法 JSON 物件或「陣列」。舊版只接受 '{' 開頭，
