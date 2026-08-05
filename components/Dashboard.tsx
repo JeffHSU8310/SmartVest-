@@ -1719,7 +1719,11 @@ const Dashboard: React.FC<Props> = ({
                               step="0.01"
                               className="w-16 bg-transparent text-xs font-bold font-mono text-slate-700 outline-none p-0 border-none focus:ring-0"
                               placeholder="-"
-                              defaultValue={item.stock.currentPrice}
+                              defaultValue={
+                                item.stock.currentPrice != null
+                                  ? Number(item.stock.currentPrice.toFixed(2))
+                                  : item.stock.currentPrice
+                              }
                               onBlur={(e) =>
                                 handlePriceUpdate(item.stock, e.target.value)
                               }

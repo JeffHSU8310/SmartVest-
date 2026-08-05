@@ -909,8 +909,14 @@ export type RealtimeQuote = { price: number; prevClose: number; name?: string; t
 // 重點：z（最近成交價）在盤中很常是 "-"，代表該撮合秒沒有成交，
 // 並不代表今天沒開盤。舊版一遇到 "-" 就直接退回 y（昨收），
 // 這正是「更新後只變成昨天收盤價」的來源。
-// 因此改為 z -> 委買委賣中價 -> pz(前次成交) -> y(昨收) 逐級退讓，
+// 因此改為 z -> pz(前次成交) -> 委買 -> 委賣 -> y(昨收) 逐級退讓，
 // 只有真的完全沒有盤中資訊時才會落到昨收。
+//
+// 曾經在 pz 之前多插一級「委買委賣中價」，結果台積電這類跳動點 5 元的
+// 股票會顯示出 2377.5 這種不存在的成交價（103.15 與 103.20 平均出
+// 103.175 也是同樣道理）——中價本來就不保證落在合法跳動點上，不是
+// 真的可能成交到的價格，因此拿掉這一級，一律使用委買或委賣本身
+// （兩者都是真實掛單，跳動點必然合法）。
 export const pickRealtimePrice = (item: any): RealtimeQuote | null => {
     if (!item || !item.c) return null;
 
@@ -925,12 +931,10 @@ export const pickRealtimePrice = (item: any): RealtimeQuote | null => {
     const bid = firstOf(item.b);
     const ask = firstOf(item.a);
     const pz = num(item.pz);
-    const mid = (bid > 0 && ask > 0) ? (bid + ask) / 2 : 0;
 
     let price = 0;
     let isLive = true;
     if (z > 0) price = z;
-    else if (mid > 0) price = mid;
     else if (pz > 0) price = pz;
     else if (bid > 0) price = bid;
     else if (ask > 0) price = ask;
