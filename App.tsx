@@ -1064,7 +1064,15 @@ function App() {
                     let targetCashAccountId = targetAccount!.linkedCashAccountId || targetAccount!.id;
                     let targetCashAccountName = targetAccount!.name;
 
-                    if (!existingStockTx) {
+                    if (!existingStockTx && setting.autoDeduct) {
+                        // 這個帳戶已開啟「自動扣款」，股票交易改由 useAutoDCA
+                        // hook 負責建立（它用 dcaSettings.amount，這裡用的是
+                        // monthlyTarget 換算出來的 amountPerDeduction，兩個金額
+                        // 不一定相同）。這裡若也建一筆，會跟 hook 那筆同一天
+                        // 各自新增，變成使用者反映的「同時產生兩筆」。
+                        // 讓 hook 先建好股票交易，下一輪這裡會在 existingStockTx
+                        // 找到它，走 else 分支補建連動的現金/家用記帳即可。
+                    } else if (!existingStockTx) {
                         const price = stock.currentPrice || stock.nav || 1;
                         const effectiveAmount = isUS ? amountPerDeduction / txExchangeRate : amountPerDeduction;
                         const quantity = effectiveAmount / price;
